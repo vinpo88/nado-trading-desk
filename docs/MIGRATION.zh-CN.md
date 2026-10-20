@@ -70,15 +70,34 @@ node scripts/registration/cli.mjs status --config registration.config.local.json
 node scripts/registration/cli.mjs plan --config registration.config.local.json --wallets private-data/wallets.json --progress private-data/source.ndjson --output private-data/resume-plan.json
 ```
 
-配置内的路径相对于配置文件目录，命令行路径相对于当前工作目录。`--progress` 可重复指定并覆盖配置中的 `progressPaths`；计划器不会悄悄忽略不存在的文件。首次没有历史记录时，显式准备新的空 NDJSON 文件，或使用 `progressPaths: []` 且省略 `--progress`。不要清空已有记录。`--output` 只允许创建新文件，已有输出应换一个文件名，保留原始资料。
+计划器 CLI 会将配置内的路径相对于配置文件目录解析，命令行路径相对于当前工作目录。`--progress` 可重复指定并覆盖配置中的 `progressPaths`；计划器不会悄悄忽略不存在的文件。首次没有历史记录时，显式准备新的空 NDJSON 文件，或使用 `progressPaths: []` 且省略 `--progress`。不要清空已有记录。`--output` 只允许创建新文件，已有输出应换一个文件名，保留原始资料。
 
 默认发布计划为 **10000 → 1 倒序**。历史记录如果按升序完成了一部分，继续时让计划器按新方向跳过已完成编号；不要把“旧日志最大编号 + 1”当作倒序计划的起点。实际少于 10,000 个钱包时，应显式设置边界和起止编号，使计划与清单一致。
 
 实际续接使用 `createPlannedNadoRunner`，把已核对的配置、清单和历史记录传入后，每次 `prepareNext()` 只准备该分片的下一个未完成钱包；`finish` 全部核验且写入进度成功才推进。失败不会跳号，队列为空返回 `null`。默认 `usernamePrefix` 为 `ybtl`，名称由前缀加编号组成；移交时也要保留实际使用的命名规则，不能把已有用户名误当作待覆盖项。
 
-## Edge、Chrome 与分片
+直接调用 CUA 运行器函数时，配置对象已经失去文件目录信息，应先把 `progressPath` 解析为绝对路径，或使用明确写入目标的 `appendProgress` 回调。这与计划器 CLI 的路径解析不同。
 
-目前官网辅助流程只实测 IAB；尚未验证 Edge/Chrome 外部浏览器并行。源码包含计划分片不代表外部浏览器已经能够自动并发执行。
+## 独立执行器迁移
+
+新设备安装并配置后使用根目录的 `Start-Registration.cmd` 打开专用 Edge 配置，在其本地页面恢复保险库并自行解锁。这个浏览器与日常浏览器、Codex 内置浏览器分别保存数据，不能因为来源浏览器已解锁就跳过恢复。已有专用配置只需解锁，不应反复恢复或重置。
+
+复制 `registration.worker.example.json` 为 `registration.worker.local.json`，核对 `walletsPath`、`progressPaths` 和 `progressPath` 指向单独迁移的公开文件。执行器会新建缺少的输出进度文件；明确指定的其他历史文件缺失时停止。默认 `10000 → 1`，按完整序列固定分片，再跳过已核验项。不能直接复制来源机器的浏览器配置目录、Cookie 或运行锁。
+
+公开清单不存在时，执行器会在解锁后通过 `/connect` 的精确导出按钮下载并验证 JSON，创建 `walletsPath` 后继续同一浏览器的流程；不会覆盖已有来源清单。若只需恢复和核对，可先用 `Open-Registration.cmd`，准备完用 `Stop-Registration.cmd` 关闭后再正式启动。每次启动后自己解锁；首次条款弹窗需阅读并明确确认本次候选摘要。来源进程的确认文件绑定原运行，不能充当新设备或新操作者的同意。
+
+```powershell
+node scripts/registration/worker.mjs status --config registration.worker.local.json
+node scripts/registration/worker.mjs accept-terms --config registration.worker.local.json --digest <本次候选的SHA256>
+```
+
+普通步骤由本地 Playwright 程序直接运行，不需要 AI 或 ChatGPT 浏览器扩展。每小时检查只读取 `status`，不要再启动逐钱包 CUA 任务。异常时保持成功记录，先核对当前项，不能删除操作意图记录来强行重试保存。
+
+本机同一用户全局只允许一个执行器，避免多个专用配置仍共用系统剪贴板。跨设备分片可复用下述固定编号规则，但每个设备须分别验证首次完整流程后再持续执行。完整一万钱包或多设备官网并行未作为已实测结果。
+
+## 旧 CUA 方式：Edge、Chrome 与分片
+
+本节只针对旧 `cua-runner.mjs`。该官网辅助流程只实测 IAB；尚未验证 Edge/Chrome 外部浏览器并行。源码包含计划分片不代表外部浏览器已经能够自动并发执行。
 
 使用外部浏览器前，按[官方扩展说明](https://learn.chatgpt.com/docs/chrome-extension)在应用“设置 → Computer Use”选择浏览器，点击 **Install** 安装官方扩展，确认变为 **Manage**。在安装扩展的浏览器用户配置中通过 `@Edge` 或 `@Chrome` 连接，保持操作者自行设置的网站权限。
 

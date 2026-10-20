@@ -16,7 +16,14 @@
     "registration:plan": "node scripts/registration/cli.mjs plan",
     "registration:status": "node scripts/registration/cli.mjs status",
     "registration:merge": "node scripts/registration/cli.mjs merge",
-    "test:registration": "node --test scripts/registration/tests/*.test.mjs",
+    "registration:start": "node scripts/registration/worker.mjs start",
+    "registration:run": "node scripts/registration/worker.mjs run",
+    "registration:worker-status": "node scripts/registration/worker.mjs status",
+    "registration:stop": "node scripts/registration/worker.mjs stop",
+    "registration:accept-terms": "node scripts/registration/worker.mjs accept-terms",
+    "registration:open": "node scripts/registration/worker.mjs open",
+    "test:registration": "node --test scripts/registration/tests/planner.test.mjs scripts/registration/tests/cli.test.mjs scripts/registration/tests/cua-runner.test.mjs scripts/registration/tests/runtime.test.mjs",
+    "test:registration:browser": "node --test scripts/registration/tests/playwright-runner.test.mjs",
     "prepare": "node scripts/install-git-hooks.mjs"
   },
   "devDependencies": {

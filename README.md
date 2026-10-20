@@ -10,9 +10,9 @@
 - 下载保险库原生加密备份；恢复前验证全部地址、HD 派生结果及签名能力。
 - 在 `/connect` 中通过 WalletConnect 连接当前选中的一个钱包；该入口固定为 Ink 主网 `57073`。
 - 明确开启后，可自动确认一次与当前钱包及指定用户名严格匹配的用户名签名；其他签名和交易仍逐次确认。
-- 使用公开地址清单和进度记录生成可恢复、可分片的处理计划，并通过 CUA 运行器按 **10000 → 9999 → … → 1** 的默认顺序逐个执行官网流程。
+- 使用公开地址清单和进度记录生成可恢复、可分片的处理计划；独立 Playwright 执行器按 **10000 → 9999 → … → 1** 的默认顺序连续执行官网流程。
 
-生成地址、官网连接、用户名保存、充值和交易就绪是不同状态。计划器只生成队列，不连接网站或签名；浏览器运行器需要已连接的浏览器工具、操作者授权和人工处理异常，不是独立运行的无人值守注册程序。
+生成地址、官网连接、用户名保存、充值和交易就绪是不同状态。独立执行器的普通步骤由本地 Node.js 程序控制，不调用 AI，也不需要 ChatGPT 浏览器扩展。操作者仍须恢复和解锁保险库、明确确认条款，并处理异常。旧 CUA 辅助模块仍保留，供人工检查或调试使用。
 
 ## 安装
 
@@ -49,10 +49,13 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm test:registration
+pnpm test:registration:browser
 pnpm --filter console test:bridge
 ```
 
 `test:bridge` 仅运行签名策略及连接状态模拟测试，不启动浏览器或连接真实钱包。完整页面测试需另行安装 Playwright 浏览器，并使用独立测试服务和临时浏览器配置；不要用正式钱包页面做自动化测试。
+
+`test:registration` 测试公开计划、状态机与进程控制；`test:registration:browser` 使用真实无头浏览器和完全拦截网络的模拟站点，不读取正式浏览器配置或使用真实钱包。Windows 默认使用已安装的 Edge，其他平台默认使用 Playwright Chromium；可通过 `NADO_FIXTURE_CHANNEL=chrome` 选择已安装的 Chrome。这些测试不等于真实 Nado 全量注册验收。
 
 ## 本地启动
 
@@ -109,6 +112,41 @@ pnpm --filter console start
 
 WalletConnect 连接码含临时配对材料，不写入日志、Git 或交接文件。一次会话只绑定一个地址；离开页面、刷新或锁库后需要重新连接。LinkSigner 是持续委托，代币额度授权和链上交易也不是登录；它们不会被用户名授权自动批准。
 
+## 连续执行：独立 Edge / Chrome 程序
+
+先完成本地安装与保险库备份。Windows 推荐使用已安装的 Edge；可在 `registration.worker.local.json` 中将 `browser` 改为 `chrome`。执行器只创建仓库内 `browser-profiles/registration/` 下的专用配置，不读取或复制日常浏览器的登录资料。
+
+1. 启动本地 Nado 服务。复制 `registration.worker.example.json` 为 `registration.worker.local.json`，核对范围、方向和历史 `progressPaths`。默认从 **10000 倒序到 1**；钱包少于一万时必须相应调整。旧进度需明确加入配置，不能仅凭当前网页编号判断已完成。
+2. 双击 **`Start-Registration.cmd`**。后台 Node 进程启动专用浏览器，等待你自行恢复加密备份、输入密码解锁并核对钱包。已在这个配置恢复过时只需解锁。不要将密码写进配置；Windows 入口在缺少配置时会复制示例，但不会替你选择历史进度。
+3. 首次没有 `walletsPath` 文件时，程序在同一浏览器中点击 `/connect` 的“导出编号与地址清单”，验证公开 JSON 后创建 `private-data/wallets.json`，随后继续执行。已有文件不会被自动覆盖。旧版页面缺少该按钮时停在 `waiting_manifest_export`，应更新本地服务。
+4. 若仅想先恢复和核对保险库，可用 **`Open-Registration.cmd`** 的准备模式；它不会注册或签名。准备完用 **`Stop-Registration.cmd`** 关闭，再启动正式执行器并自行解锁。
+5. 首次遇到条款时，程序等待本次运行的明确确认。检查官网弹窗及链接，用下面的 `status` 查看候选摘要；阅读候选文件并确认后，执行带实际摘要值的 `accept-terms` 命令。文档和示例不预先批准条款。
+
+```powershell
+node scripts/registration/worker.mjs status --config registration.worker.local.json
+node scripts/registration/worker.mjs accept-terms --config registration.worker.local.json --digest <本次候选的SHA256>
+```
+
+确认后，同一进程按该候选核对后续弹窗的六项声明与链接；变化则停止。这个比对不等于监测链接所指法律文档的全文版本，操作者应在确认时阅读链接内容。每次重新启动是新的运行，需重新解锁和确认本次候选。
+
+执行器等待页面状态和按钮就绪，不设每个钱包固定长时间休眠；网站响应、连接中继、姓名可用性检查和签名仍需要时间。用户名冲突仅在官网明确提示占用时处理：在 `ybtl` 字母之间插入随机数字，保留钱包编号，并同步本地一次授权的完整用户名。
+
+| 操作 | Windows 入口 | 命令 |
+| --- | --- | --- |
+| 仅准备专用浏览器 | `Open-Registration.cmd` | `worker.mjs open --config registration.worker.local.json` |
+| 后台连续执行 | `Start-Registration.cmd` | `worker.mjs start --config registration.worker.local.json` |
+| 查看进度 | `Registration-Status.cmd` | `worker.mjs status --config registration.worker.local.json` |
+| 当前项完成后停止 | `Stop-Registration.cmd` | `worker.mjs stop --config registration.worker.local.json` |
+| 前台排查 | 终端运行 | `worker.mjs run --config registration.worker.local.json` |
+
+表中命令需加上 `node scripts/registration/` 前缀。`status` 只读取公开状态，不接管浏览器。每小时的监控只需调用它，不能再同时启动旧 CUA 登录循环。
+
+只有官网地址、准确用户名、Ink 主网和本地结果全部核验，且成功进度写入后，才处理下一个钱包。保存用户名之前先持久记录操作意图；保存后的结果不明确时停止核对，不盲目再次提交。停止命令等待当前钱包结束；等待解锁或条款确认时可直接结束。异常或退出会关闭专用浏览器，清除尚未使用的页面授权。不要强行结束进程后把未核实项记为成功。
+
+本机同一用户只允许一个执行器，包括准备模式，防止系统剪贴板与钱包连接互相干扰。可在不同设备使用固定计划分片，分别保管保险库和进度；调整分片前先停止并合并记录。当前版本不宣称一万钱包的官网长时间运行已经完成实测，也不宣称 Edge/Chrome 多通道官网并行已验证。
+
+断电或强制结束后若提示 `WORKER_LOCK_STALE`，先确认旧执行器及其专用浏览器均已关闭，再运行 `node scripts/registration/worker.mjs recover-locks --config registration.worker.local.json --confirm-closed`。命令只处理对应的过期运行锁，拒绝移除仍有存活进程的锁，也不会杀死浏览器；不要删除 `attempt.json` 来绕过保存结果核对。
+
 ## 倒序计划与断点续接
 
 注册辅助文件位于 `scripts/registration/`。从 `registration.config.example.json` 复制成本地配置，根据实际钱包范围设置参数；默认值如下：
@@ -126,7 +164,7 @@ WalletConnect 连接码含临时配对材料，不写入日志、Git 或交接�
 
 `laneIndex` 从 **0** 开始。钱包编号是 `/connect` 中从 1 开始的全局顺序，不是 HD 派生索引。在该页面点击“导出编号与地址清单”，将下载的 `wallet-manifest.json` 复制为 `private-data/wallets.json`。文件自动包含全部钱包的 `walletNumber` 和 `address`，无需手写 JSON 或转换地址 TXT。保留导出的编号和顺序，并与恢复后页面核对；不要把备份文件或私钥传给计划器。
 
-配置示例使用 `.local/` 保存本地清单和进度，`usernamePrefix` 默认为 `ybtl`，例如第 10000 个钱包的默认用户名是 `ybtl10000`。可以修改前缀或显式提供用户名规则；官网名称必须与本地一次授权的完整名称一致。配置中的路径相对于配置文件所在目录，命令行参数中的路径相对于当前工作目录。
+配置示例使用 `.local/` 保存本地清单和进度，`usernamePrefix` 默认为 `ybtl`，例如第 10000 个钱包的默认用户名是 `ybtl10000`。可以修改前缀或显式提供用户名规则；官网名称必须与本地一次授权的完整名称一致。计划器 CLI 会将配置中的路径相对于配置文件所在目录解析，命令行路径参数相对于当前工作目录。
 
 以下示例改用操作者自行准备的 `private-data/` 文件。首次运行应显式创建一个**新的空 NDJSON 文件**，或将本地配置中的 `progressPaths` 设为 `[]` 并省略 `--progress`。配置指向的文件不存在会停止，不能为了重新运行而清空已有进度。
 
@@ -147,6 +185,8 @@ node scripts/registration/cli.mjs merge --config registration.config.local.json 
 
 `scripts/registration/cua-runner.mjs` 导出 `createPlannedNadoRunner`，在已初始化的 CUA 会话中使用。调用者提供配置 `config`、已读取的历史记录 `records`、本地页与官网页对象、公开地址清单及进度写入回调；也可提供 `fs` 与 `progressPath`。它按配置和历史记录建立固定队列，默认使用“`usernamePrefix` + 编号”，也允许显式提供 `usernameForWallet`。它不会自行读取保险库密码或创建浏览器配置。
 
+这个函数接收解析后的对象，不知道配置文件的位置。直接调用时应传入已解析的**绝对 `progressPath`**，或用 `appendProgress` 回调固定写入目标；不能把 CLI 的相对路径规则套用到函数调用。
+
 - `prepareNext()` 连接并核对当前分片的下一个未完成钱包，返回当前六项声明和链接，停在条款确认前；队列为空时返回 `null`。
 - `finish(prepared, confirmation)` 仅处理本运行器当前准备的钱包，全部核验并写入进度成功后才推进队列；失败不会跳号。确认对象必须来自本次操作者明确决定，包含 `confirmed: true`、非空上下文、六项准确声明、官方条款及隐私链接；文档不提供预先批准的对象。
 - `status()` 返回 `nextWalletNumber`、剩余和完成数量，以及外部浏览器首钱包验证状态。每个运行器串行处理，支持通过 `AbortSignal` 中止后续操作；中止不会撤销已经完成的官网操作。
@@ -155,9 +195,9 @@ node scripts/registration/cli.mjs merge --config registration.config.local.json 
 
 运行器只在官网地址、用户名、Ink 网络和本地签署结果都核实后写成功记录。失败时保留已完成状态并人工核对；不要在不知道官网是否保存成功时重复提交。
 
-## 浏览器与并行状态
+## 旧 CUA 辅助方式与并行限制
 
-**当前官网辅助流程仅实测 Codex 内置浏览器（IAB）；外部 Edge/Chrome 的官网并行流程尚未验证。** 不把打开多个普通窗口当作多个独立身份，普通窗口可能共享官网登录状态。
+以下仅适用于 `cua-runner.mjs`，独立执行器无需此扩展。**旧 CUA 官网辅助流程仅实测 Codex 内置浏览器（IAB）；外部 Edge/Chrome 的官网并行流程尚未验证。** 不把打开多个普通窗口当作多个独立身份，普通窗口可能共享官网登录状态。
 
 如后续使用外部浏览器，需要为每条通道准备独立浏览器用户配置，并按[官方 ChatGPT 浏览器扩展说明](https://learn.chatgpt.com/docs/chrome-extension)连接：
 

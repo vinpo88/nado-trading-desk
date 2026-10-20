@@ -11,6 +11,7 @@ private-data/
 browser-profiles/
 wallet-manifest*.json
 registration.config.local.json
+registration.worker.local.json
 nado-vault-*.json
 *vault-backup*.json
 *.pem
