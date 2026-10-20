@@ -11,6 +11,7 @@ const ENUMS = {
     'preparing', 'disconnected', 'error', 'unknown', 'unavailable',
   ]),
   fault: new Set(['ui_timeout', 'ui_state', 'origin_mismatch', 'aborted']),
+  disconnectReason: new Set(['pair_timeout', 'pair_failed', 'proposal_expired', 'unknown']),
 };
 const BOOLEANS = [
   'walletMatches', 'usernameMatches', 'authorizationArmed', 'siteProfileMatches',

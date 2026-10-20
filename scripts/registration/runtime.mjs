@@ -10,7 +10,7 @@ import { sanitizeUiObservation } from './ui-diagnostics.mjs';
 
 const PLAN_KEYS = ['bounds', 'start', 'end', 'direction', 'laneCount', 'laneIndex'];
 const CONFIG_KEYS = new Set([...PLAN_KEYS, 'walletsPath', 'progressPath', 'progressPaths', 'usernamePrefix',
-  'browser', 'profileName', 'localUrl', 'timeoutMs', 'pollIntervalMs', 'maxUsernameCandidates']);
+  'browser', 'profileName', 'localUrl', 'timeoutMs', 'pollIntervalMs', 'maxUsernameCandidates', 'autoUnlockCredential']);
 const CODES = new Set(['CONFIG_INVALID', 'PUBLIC_FILE_INVALID', 'WORKER_ALREADY_RUNNING', 'WORKER_LOCK_STALE',
   'PROFILE_NOT_DEDICATED', 'STORAGE_ERROR', 'BROWSER_START_FAILED', 'BROWSER_CLOSED', 'VAULT_LOCKED',
   'TERMS_CONFIRMATION_REQUIRED', 'PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING', 'TERMS_INVALID', 'CONFIRMATION_INVALID', 'NEEDS_ATTENTION', 'ABORTED',
@@ -19,7 +19,7 @@ const RUNNER_STAGES = new Set(['preparing', 'pairing', 'prepared', 'checking_use
   'verified', 'accepting_terms', 'username_introduction', 'save_pending', 'awaiting_username_result',
   'opening_walletconnect', 'waiting_pairing_link', 'clearing_pairing_clipboard', 'copying_pairing_link',
   'reading_pairing_link', 'validating_pairing_link', 'filling_pairing_link',
-  'sending_connection_request', 'waiting_connection_proposal', 'approving_connection', 'waiting_onboarding', 'resetting_stale_session', 'waiting_website']);
+  'sending_connection_request', 'waiting_connection_proposal', 'approving_connection', 'waiting_onboarding', 'resetting_stale_session', 'waiting_website', 'recovering_connection']);
 export const TERMINAL_PHASES = new Set(['completed', 'stopped', 'failed']);
 export class WorkerError extends Error {
   constructor(code) {
@@ -37,6 +37,14 @@ const digest = value => createHash('sha256').update(JSON.stringify(value)).diges
 const groupLeases = new WeakMap();
 const pathString = value => typeof value === 'string' && value.trim() && !value.includes('\0');
 const int = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
+const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const RESUME_KEYS = ['formatVersion', 'requestId', 'runId', 'profileName', 'attentionId', 'walletNumber', 'address', 'requestedAt'];
+const validResumeCommand = command => object(command)
+  && Object.keys(command).length === RESUME_KEYS.length && Object.keys(command).every(key => RESUME_KEYS.includes(key))
+  && command.formatVersion === 1 && UUID.test(command.requestId) && UUID.test(command.runId) && UUID.test(command.attentionId)
+  && typeof command.profileName === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(command.profileName)
+  && int(command.walletNumber, 1, 1000000) && /^0x[0-9a-f]{40}$/.test(command.address)
+  && typeof command.requestedAt === 'string' && Number.isFinite(Date.parse(command.requestedAt));
 
 export function normalizeWorkerConfig(raw, { configPath, repoDir }) {
   try {
@@ -47,6 +55,8 @@ export function normalizeWorkerConfig(raw, { configPath, repoDir }) {
     const profileName = raw.profileName ?? `registration-${browser}`;
     if (!['edge', 'chrome', 'chromium'].includes(browser) || typeof profileName !== 'string'
       || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(profileName)) fail('CONFIG_INVALID');
+    if (raw.autoUnlockCredential !== undefined && (typeof raw.autoUnlockCredential !== 'string'
+      || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(raw.autoUnlockCredential))) fail('CONFIG_INVALID');
     const localUrl = new URL(raw.localUrl ?? 'http://127.0.0.1:18270/connect');
     if (localUrl.protocol !== 'http:' || localUrl.hostname !== '127.0.0.1' || localUrl.pathname !== '/connect'
       || localUrl.username || localUrl.password || localUrl.hash || localUrl.search) fail('CONFIG_INVALID');
@@ -73,12 +83,13 @@ export function normalizeWorkerConfig(raw, { configPath, repoDir }) {
     return {
       plan, repoDir: repo, configPath: resolve(configPath), browser, profileName, profileDir, stateDir,
       localUrl: localUrl.href, walletsPath, progressPath, progressPaths, usernamePrefix,
+      ...(raw.autoUnlockCredential === undefined ? {} : { autoUnlockCredential: raw.autoUnlockCredential }),
       timeoutMs, pollIntervalMs, maxUsernameCandidates,
       globalLockPath: join(tmpdir(), `nado-registration-${owner}`, 'worker.lock'),
       profileLockPath: join(stateDir, 'profile.lock'),
       statusPath: join(stateDir, 'status.json'), stopPath: join(stateDir, 'stop.json'),
       candidatePath: join(stateDir, 'terms-candidate.json'), consentPath: join(stateDir, 'terms-accepted.json'),
-      attemptPath: join(stateDir, 'attempt.json'),
+      attemptPath: join(stateDir, 'attempt.json'), resumePath: join(stateDir, 'resume.json'),
     };
   } catch { fail('CONFIG_INVALID'); }
 }
@@ -247,6 +258,38 @@ export async function requestWorkerStop(config) {
   await atomicWriteJson(config.stopPath, { runId: state.runId, requestedAt: now() });
   return { phase: 'stop_requested', runId: state.runId, message: '当前钱包完成并保存后停止；等待解锁或条款时立即停止。' };
 }
+export async function requestWorkerResume(config, expectedAttentionId) {
+  return withControlLock(config, async () => {
+    const state = await workerStatus(config);
+    if (!state.processAlive) fail('NOT_RUNNING');
+    if (state.phase !== 'waiting_attention' || state.canResumeConnection !== true
+      || !UUID.test(expectedAttentionId ?? '') || state.attentionId !== expectedAttentionId
+      || !UUID.test(state.runId ?? '') || !int(state.currentWalletNumber, 1, 1000000)) fail('CONFIRMATION_INVALID');
+    const stop = await readPublicJson(config.stopPath, { optional: true });
+    if (stop?.runId === state.runId || await readPublicJson(config.attemptPath, { optional: true }) !== null) fail('CONFIRMATION_INVALID');
+    let manifest;
+    try { manifest = validateWalletManifest(await readPublicJson(config.walletsPath)); }
+    catch { fail('PUBLIC_FILE_INVALID'); }
+    const address = manifest.find(wallet => wallet.walletNumber === state.currentWalletNumber)?.address;
+    if (!address) fail('CONFIRMATION_INVALID');
+    const existing = await readPublicJson(config.resumePath, { optional: true });
+    if (existing?.runId === state.runId && existing.attentionId === expectedAttentionId) fail('CONFIRMATION_INVALID');
+    // Older workers publish neither this capability nor its one-use token.
+    const latest = await workerStatus(config);
+    if (!latest.processAlive || latest.phase !== 'waiting_attention' || latest.runId !== state.runId
+      || latest.currentWalletNumber !== state.currentWalletNumber || latest.attentionId !== expectedAttentionId
+      || latest.canResumeConnection !== true
+      || (await readPublicJson(config.stopPath, { optional: true }))?.runId === state.runId
+      || await readPublicJson(config.attemptPath, { optional: true }) !== null) fail('CONFIRMATION_INVALID');
+    await atomicWriteJson(config.resumePath, {
+      formatVersion: 1, requestId: randomUUID(), runId: state.runId, profileName: config.profileName,
+      attentionId: expectedAttentionId, walletNumber: state.currentWalletNumber, address, requestedAt: now(),
+    });
+    return { phase: 'resume_requested', runId: state.runId, profileName: config.profileName,
+      attentionId: expectedAttentionId, walletNumber: state.currentWalletNumber };
+  });
+}
+
 export async function acceptWorkerTerms(config, expectedDigest) {
   const state = await workerStatus(config);
   const candidate = await readPublicJson(config.candidatePath);
@@ -400,9 +443,12 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
   const owner = { pid: process.pid, runId, token: randomUUID(), createdAt: now() };
   let releaseGlobal, releaseProfile, browser, runner, timer, writeQueue = Promise.resolve();
   let stopped = false, current = null, attempt = null, confirmation, completed = 0, total = 0, runnerEventError = null;
-  let state = { formatVersion: 1, pid: owner.pid, runId, phase: 'starting', startedAt: now(), updatedAt: now(), total: 0, completed: 0, remaining: 0 };
+  let state = { formatVersion: 1, pid: owner.pid, runId, phase: 'starting', startedAt: now(), updatedAt: now(), total: 0, completed: 0, remaining: 0,
+    attentionId: null, canResumeConnection: false };
   const writeState = patch => {
-    state = { ...state, ...patch, updatedAt: now() };
+    state = { ...state, ...patch,
+      ...(patch.phase && patch.phase !== 'waiting_attention' ? { attentionId: null, canResumeConnection: false } : {}),
+      updatedAt: now() };
     const snapshot = { ...state };
     writeQueue = writeQueue.then(() => atomicWriteJson(config.statusPath, snapshot));
     return writeQueue;
@@ -417,6 +463,56 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
   const launch = async () => {
     if (browser) return;
     try { browser = await dependencies.launch(config); } catch { fail('BROWSER_START_FAILED'); }
+  };
+  const waitForConnectionRecovery = async firstError => {
+    let failure = firstError;
+    while (!(await stopRequested())) {
+      if (safeErrorCode(failure) !== 'NEEDS_ATTENTION' || failure?.retainedBrowserSafe !== true
+        || browser.isClosed?.() !== false) throw failure;
+      const attentionId = randomUUID();
+      let allowed = !attempt && failure.connectionRecoveryAllowed === true && typeof runner.recoverConnection === 'function'
+        && await readPublicJson(config.attemptPath, { optional: true }) === null;
+      await writeState({ phase: 'waiting_attention', errorCode: 'NEEDS_ATTENTION',
+        uiState: sanitizeUiObservation(failure?.uiState), waitingSince: now(), attentionId, canResumeConnection: allowed });
+      while (!(await stopRequested())) {
+        const command = allowed ? await readPublicJson(config.resumePath, { optional: true }) : null;
+        const matches = value => validResumeCommand(value) && value.runId === runId
+          && value.profileName === config.profileName && value.attentionId === attentionId
+          && value.walletNumber === current.walletNumber && value.address === current.address;
+        if (allowed && matches(command)) {
+          const consumed = await withControlLock(config, async () => {
+            if (await stopRequested()) return false;
+            const latest = await readPublicJson(config.resumePath, { optional: true });
+            if (!matches(latest) || latest.requestId !== command.requestId) return false;
+            if (attempt || await readPublicJson(config.attemptPath, { optional: true }) !== null) {
+              allowed = false;
+              await writeState({ canResumeConnection: false });
+              return false;
+            }
+            // Consume before any UI action. A failed recovery gets a new token.
+            try { await unlink(config.resumePath); } catch { fail('STORAGE_ERROR'); }
+            await writeState({ phase: 'working', stage: 'recovering_connection', errorCode: null,
+              uiState: {}, waitingSince: null });
+            return true;
+          });
+          if (consumed) {
+            if (await stopRequested()) return false;
+            runnerEventError = null;
+            try {
+              await runner.recoverConnection(current.walletNumber);
+              if (runnerEventError) throw runnerEventError;
+              return true;
+            } catch (error) {
+              if (runnerEventError) throw runnerEventError;
+              failure = error;
+              break;
+            }
+          }
+        }
+        await wait(Math.min(config.pollIntervalMs, 1000));
+      }
+    }
+    return false;
   };
   try {
     await ensureOwnedDirectory(config.repoDir, config.stateDir);
@@ -568,12 +664,9 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
               await wait(config.pollIntervalMs);
             }
           } else if (code === 'NEEDS_ATTENTION' && error?.retainedBrowserSafe === true && browser.isClosed?.() === false) {
-            // Only the runner can attest that it revoked unused authorization
-            // and disconnected the still-open local page. Keep this promise
-            // and its locks alive, but never call the runner again or replay Save.
-            await writeState({ phase: 'waiting_attention', errorCode: code,
-              uiState: sanitizeUiObservation(error?.uiState), waitingSince: now() });
-            while (!(await stopRequested())) await wait(Math.min(config.pollIntervalMs, 1000));
+            // Keep the same runner, context, plan item and group coordinator.
+            // Only a separately attested pre-Save connection failure can resume.
+            await waitForConnectionRecovery(error);
           } else {
             await writeState({ uiState: sanitizeUiObservation(error?.uiState) });
             throw new WorkerError(code);

@@ -7,13 +7,14 @@ test('preserves every explicitly allowed classification', () => {
     siteStage: [
       'unknown', 'terms', 'introduction', 'username', 'username_ready',
       'username_conflict', 'username_checking', 'complete', 'pairing',
-      'login_methods', 'signed_out', 'unavailable',
+      'login_methods', 'signed_out', 'connected_unnamed', 'unavailable',
     ],
     localStatus: [
       'idle', 'connecting', 'proposal', 'connected', 'request', 'executing',
       'preparing', 'disconnected', 'error', 'unknown', 'unavailable',
     ],
     fault: ['ui_timeout', 'ui_state', 'origin_mismatch', 'aborted'],
+    disconnectReason: ['pair_timeout', 'pair_failed', 'proposal_expired', 'unknown'],
   };
   for (const [key, values] of Object.entries(fields)) {
     for (const value of values) assert.deepEqual(sanitizeUiObservation({ [key]: value }), { [key]: value });
@@ -56,7 +57,7 @@ test('discards raw secrets and unknown fields without retaining any nested data'
 
 test('unknown enum values and coercible objects are not accepted', () => {
   for (const value of ['PRIVATE_SENTINEL', 'Terms', 'terms ', ' connected', '', 1, true, [], {}, new String('terms')]) {
-    assert.deepEqual(sanitizeUiObservation({ siteStage: value, localStatus: value, fault: value }), {});
+    assert.deepEqual(sanitizeUiObservation({ siteStage: value, localStatus: value, fault: value, disconnectReason: value }), {});
   }
   assert.deepEqual(sanitizeUiObservation({ siteStage: 'connected', localStatus: 'terms', fault: 'unknown' }), {});
 });

@@ -7,22 +7,25 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import {
   WorkerError, safeErrorCode, loadWorkerConfig, readPublicJson, pidAlive,
-  runWorker, workerStatus, requestWorkerStop, acceptWorkerTerms, recoverWorkerLocks,
+  runWorker, workerStatus, requestWorkerStop, requestWorkerResume, acceptWorkerTerms, recoverWorkerLocks,
 } from './runtime.mjs';
 import { validateWalletManifest } from './planner.mjs';
+import { tryAutoUnlock } from './local-credentials.mjs';
 
 const ENTRY = fileURLToPath(import.meta.url);
 const REPO = resolve(dirname(ENTRY), '../..');
 const HELP = `本地独立注册执行器（仅使用新的专用浏览器）
 node scripts/registration/worker.mjs open|start|run|status|stop --config FILE
 node scripts/registration/worker.mjs accept-terms --config FILE --digest SHA256
+node scripts/registration/worker.mjs resume-connection --config FILE --attention-id UUID
 node scripts/registration/worker.mjs recover-locks --config FILE --confirm-closed
 open：打开专用浏览器，供手动恢复保险库和导出公开地址清单；不会注册或签名。
 start：隐藏后台 Node 进程，显示专用浏览器；run：在当前终端运行。
 stop：完成当前钱包并保存后停止；等待解锁、条款或人工检查时及时停止。
 waiting_attention：保留已安全断开的专用浏览器供检查，不会自动重试；stop 或关闭窗口后结束。
+resume-connection：仅对状态明确提供 canResumeConnection=true 的本次暂停恢复连接，保留同一钱包和原调度器，不影响其他成员。
 status：只读进程和进度；accept-terms：明确确认当前运行候选文件中的六项声明。
-必须手动恢复、解锁保险库；不会复制其他浏览器的数据。
+必须自行恢复保险库；默认手动解锁，可选 Windows 本机加密凭据自动解锁，不复制其他浏览器的数据。
 默认从 10000 倒序，采用配置中的公开清单和已核验进度。`;
 const ERROR_TEXT = {
   CONFIG_INVALID: '配置无效，请使用 registration.worker.example.json 的字段。',
@@ -41,18 +44,20 @@ const delay = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
 export function parseWorkerArgs(args) {
   if (!args.length || args.includes('--help') || args.includes('-h')) return { help: true };
   const command = args[0];
-  if (!['open', 'start', 'run', 'status', 'stop', 'accept-terms', 'recover-locks'].includes(command)) throw new WorkerError('CONFIG_INVALID');
+  if (!['open', 'start', 'run', 'status', 'stop', 'accept-terms', 'recover-locks', 'resume-connection'].includes(command)) throw new WorkerError('CONFIG_INVALID');
   const result = { command };
   for (let index = 1; index < args.length; index++) {
     const flag = args[index];
     if (flag === '--setup' && command === 'run' && !result.setup) { result.setup = true; continue; }
     if (flag === '--confirm-closed' && command === 'recover-locks' && !result.confirmClosed) { result.confirmClosed = true; continue; }
-    if (!['--config', '--digest', '--run-id'].includes(flag) || !args[index + 1] || args[index + 1].startsWith('--')) throw new WorkerError('CONFIG_INVALID');
+    if (!['--config', '--digest', '--run-id', '--attention-id'].includes(flag) || !args[index + 1] || args[index + 1].startsWith('--')) throw new WorkerError('CONFIG_INVALID');
     const key = flag.slice(2);
     if (result[key] !== undefined) throw new WorkerError('CONFIG_INVALID');
     result[key] = args[++index];
   }
   if (!result.config || (result.digest !== undefined && command !== 'accept-terms')
+    || (command === 'resume-connection' && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(result['attention-id'] ?? ''))
+    || (result['attention-id'] !== undefined && command !== 'resume-connection')
     || (result['run-id'] !== undefined && (command !== 'run' || !/^[a-f0-9-]{36}$/.test(result['run-id'])))) throw new WorkerError('CONFIG_INVALID');
   return result;
 }
@@ -78,6 +83,9 @@ export async function launchDedicatedBrowser(config) {
     // an old local authorization page from surviving alongside a new worker.
     for (const page of context.pages()) if (page !== localPage && page !== nadoPage) await page.close({ runBeforeUnload: false });
     await localPage.goto(config.localUrl, { waitUntil: 'domcontentloaded', timeout: config.timeoutMs });
+    // Failure leaves the existing vault locked for manual input. Never log a
+    // Playwright error from this operation: it could include the input value.
+    await tryAutoUnlock(config, { localPage });
     await nadoPage.goto('https://app.nado.xyz/perpetuals?market=BTC', { waitUntil: 'domcontentloaded', timeout: config.timeoutMs });
     await localPage.bringToFront();
     return {
@@ -167,6 +175,7 @@ export async function runWorkerCli(args, output = print) {
   const config = await loadWorkerConfig(resolve(options.config), REPO);
   if (options.command === 'status') { output(await workerStatus(config)); return; }
   if (options.command === 'stop') { output(await requestWorkerStop(config)); return; }
+  if (options.command === 'resume-connection') { output(await requestWorkerResume(config, options['attention-id'])); return; }
   if (options.command === 'accept-terms') { output(await acceptWorkerTerms(config, options.digest)); return; }
   if (options.command === 'recover-locks') { output(await recoverWorkerLocks(config, options.confirmClosed)); return; }
   if (options.command === 'start' || options.command === 'open') {

@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import {
   parseGroupArgs, loadGroupConfig, groupStatus, stopGroup, runGroup, startGroup, publicWorkerState,
 } from '../group.mjs';
-import { readPublicJson, runWorker, WorkerError } from '../runtime.mjs';
+import { readPublicJson, runWorker, requestWorkerResume, WorkerError } from '../runtime.mjs';
 
 const tick = () => new Promise(resolveWait => setImmediate(resolveWait));
 function deferred() {
@@ -308,6 +308,13 @@ test('status is read-only, identifies members, and never exposes unknown raw fie
   assert.deepEqual(publicWorkerState({ phase: 'wc:unsafe', errorCode: 'raw secret' }), { phase: 'failed', errorCode: 'RUNNER_FAILED' });
   assert.deepEqual(publicWorkerState({ phase: 'waiting_attention', retainedBrowserSafe: true }),
     { phase: 'waiting_attention' });
+  const attentionId = randomUUID();
+  assert.deepEqual(publicWorkerState({ phase: 'waiting_attention', attentionId, canResumeConnection: true }),
+    { phase: 'waiting_attention', attentionId, canResumeConnection: true });
+  assert.deepEqual(publicWorkerState({ phase: 'working', attentionId: null, canResumeConnection: false, errorCode: null }),
+    { phase: 'working', attentionId: null, canResumeConnection: false });
+  assert.deepEqual(publicWorkerState({ phase: 'waiting_attention', attentionId: 'raw private text', canResumeConnection: 'true' }),
+    { phase: 'waiting_attention' });
 });
 
 test('group integrates with real runtime lease and independent ledgers using only synthetic browsers', async t => {
@@ -401,4 +408,82 @@ test('one member retains attention while its peer completes; group stop closes w
   assert.deepEqual(closed, ['fixture-1', 'fixture-0']);
   for (const config of group.configs) assert.equal(await readPublicJson(config.profileLockPath, { optional: true }), null);
   assert.equal(await readPublicJson(group.configs[0].globalLockPath, { optional: true }), null);
+});
+
+test('single-member connection resume keeps the peer running and reuses the same group coordinator', { timeout: 5000 }, async t => {
+  const { root, group } = await fixture(t);
+  const wallets = Array.from({ length: 4 }, (_, index) => ({
+    walletNumber: index + 1, address: `0x${String(index + 1).repeat(40)}`,
+  }));
+  await writeFile(join(root, 'wallets.json'), JSON.stringify(wallets));
+  const attentionReady = deferred(), peerAdvanced = deferred(), edgeRecovered = deferred();
+  const visited = [], launched = [], closed = [], runnerCoordinators = [];
+  let resumed = false, requests = 0;
+  const result = await runGroup(group, {
+    sleep: tick,
+    runWorker: (config, deps, options) => runWorker(config, {
+      ...deps,
+      sleep: async () => {
+        assert.equal(config.browser, 'edge');
+        attentionReady.resolve();
+        await peerAdvanced.promise;
+        if (requests) return tick();
+        const state = await groupStatus(group);
+        assert.deepEqual(state.workers.map(member => member.phase), ['waiting_attention', 'working']);
+        assert.equal(state.workers[0].canResumeConnection, true);
+        assert.equal(state.workers[1].currentWalletNumber, 1);
+        assert.deepEqual(closed, []);
+        await requestWorkerResume(config, state.workers[0].attentionId);
+        requests++;
+      },
+    }, options),
+    launch: async config => {
+      launched.push(config.browser);
+      return {
+        localPage: { browser: config.browser, getByTestId: () => ({ isVisible: async () => true }) }, nadoPage: {},
+        isClosed: () => false, close: async () => { closed.push(config.browser); },
+      };
+    },
+    createRunner: options => {
+      runnerCoordinators.push(options.withUi);
+      return {
+        runWallet: async number => {
+          visited.push(number);
+          if (number === 4 && !resumed) {
+            throw Object.assign(new WorkerError('NEEDS_ATTENTION'), {
+              retainedBrowserSafe: true, connectionRecoveryAllowed: true,
+              uiState: { siteStage: 'pairing', localStatus: 'disconnected', disconnectReason: 'pair_timeout',
+                walletMatches: true, usernameMatches: true, authorizationArmed: false },
+            });
+          }
+          if (number === 2) await attentionReady.promise;
+          if (number === 1) { peerAdvanced.resolve(); await edgeRecovered.promise; }
+          return {
+            walletNumber: number, address: wallets[number - 1].address, username: `ybtl${number}`,
+            status: 'verified_login_and_ink', loginComplete: true, websiteSignedIn: true,
+            websiteNetwork: 'Ink', approvedChainId: 57073, agentTransactionsSent: 0,
+          };
+        },
+        recoverConnection: async number => options.withUi(async () => {
+          assert.equal(options.localPage.browser, 'edge');
+          assert.equal(number, 4);
+          assert.equal(resumed, false);
+          assert.deepEqual(closed, []);
+          resumed = true;
+          edgeRecovered.resolve();
+          return { walletNumber: number, recovered: true };
+        }),
+        cleanup: async () => {},
+      };
+    },
+  });
+  assert.equal(result.phase, 'completed');
+  assert.equal(requests, 1);
+  assert.deepEqual(launched.toSorted(), ['chrome', 'edge']);
+  assert.equal(runnerCoordinators.length, 2);
+  assert.equal(runnerCoordinators[0], runnerCoordinators[1]);
+  assert.deepEqual(visited.filter(number => number >= 3), [4, 4, 3]);
+  assert.deepEqual(visited.filter(number => number <= 2), [2, 1]);
+  assert.deepEqual(closed.toSorted(), ['chrome', 'edge']);
+  assert.deepEqual(result.workers.map(member => member.completed), [2, 2]);
 });

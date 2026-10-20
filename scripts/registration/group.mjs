@@ -74,6 +74,8 @@ export function publicWorkerState(raw) {
     if (raw?.[key] === null || (Number.isSafeInteger(raw?.[key]) && raw[key] > 0)) state[key] = raw[key];
   }
   if (UUID.test(raw?.runId ?? '')) state.runId = raw.runId;
+  if (raw?.attentionId === null || UUID.test(raw?.attentionId ?? '')) state.attentionId = raw.attentionId;
+  if (typeof raw?.canResumeConnection === 'boolean') state.canResumeConnection = raw.canResumeConnection;
   if (typeof raw?.processAlive === 'boolean') state.processAlive = raw.processAlive;
   for (const key of ['startedAt', 'updatedAt', 'waitingSince']) {
     if (typeof raw?.[key] === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(raw[key]) && Number.isFinite(Date.parse(raw[key]))) state[key] = raw[key];
@@ -82,7 +84,7 @@ export function publicWorkerState(raw) {
   const uiState = sanitizeUiObservation(raw?.uiState);
   if (Object.keys(uiState).length) state.uiState = uiState;
   if (/^[a-f0-9]{64}$/.test(raw?.termsDigest ?? '')) state.termsDigest = raw.termsDigest;
-  if (raw?.errorCode !== undefined) state.errorCode = runtime.safeErrorCode({ code: raw.errorCode });
+  if (raw?.errorCode !== undefined && raw?.errorCode !== null) state.errorCode = runtime.safeErrorCode({ code: raw.errorCode });
   return state;
 }
 const memberState = (config, state) => ({ configPath: config.configPath, profileName: config.profileName, browser: config.browser, ...publicWorkerState(state) });

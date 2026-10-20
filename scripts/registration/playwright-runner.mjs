@@ -25,6 +25,13 @@ export class RegistrationUiError extends Error {
 }
 const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const validName = name => typeof name === 'string' && /^[A-Za-z0-9_.]{3,20}$/.test(name);
+const CONNECTION_FAILURES = new Map([
+  ['等待官网连接超时，请重新生成连接链接。', 'pair_timeout'],
+  ['连接失败，请检查项目 ID、网络和官网连接链接后重试。', 'pair_failed'],
+  ['连接申请已过期，请在官网重新连接。', 'proposal_expired'],
+  ['连接申请已过期，请从官网重新生成链接。', 'proposal_expired'],
+]);
+const RECOVERY_URL = `${NADO_ORIGIN}/perpetuals?market=BTC`;
 
 export function makeUsernameAlternative(base, walletNumber, digits = String(randomInt(1, 10000)), position) {
   const suffix = String(walletNumber);
@@ -117,6 +124,7 @@ export function createPlaywrightNadoRunner({
   const approval = termsConfirmation === undefined ? undefined : validateTermsConfirmation(termsConfirmation);
   let current = null; let busy = false; let stage = 'idle'; let activeNumber;
   let cleanupPromise = null; let lastCandidate = null; let pendingPair = null; let pendingOnboarding = null; let pendingProposal = null;
+  let connectionRecoveryCandidate = null;
   const saveAttempts = new Map();
   if (resumeAttempt !== undefined) {
     if (!resumeAttempt || resumeAttempt.saveAttempted !== true || addresses.get(resumeAttempt.walletNumber) !== resumeAttempt.address?.toLowerCase()
@@ -146,6 +154,7 @@ export function createPlaywrightNadoRunner({
     await onEvent({ stage, ...(activeNumber === undefined ? {} : { walletNumber: activeNumber, address: addresses.get(activeNumber) }), ...values });
   }
   async function cleanup() {
+    connectionRecoveryCandidate = null;
     pendingPair = null;
     pendingOnboarding = null;
     pendingProposal = null;
@@ -177,17 +186,26 @@ export function createPlaywrightNadoRunner({
   }
   const abortCleanup = () => { void cleanup(); };
   signal?.addEventListener('abort', abortCleanup, { once: true });
-  async function safeOperation(operation) {
+  async function safeOperation(operation, { recovering = false } = {}) {
     if (busy) fail('NEEDS_ATTENTION');
     busy = true;
+    if (!recovering) connectionRecoveryCandidate = null;
     try { guard(); return await operation(); }
     catch (error) {
       const failure = error instanceof RegistrationUiError ? error
         : new RegistrationUiError(signal?.aborted ? 'ABORTED' : 'NEEDS_ATTENTION', stage, activeNumber);
       if (!(error instanceof RegistrationUiError) || !['VAULT_LOCKED', 'TERMS_CONFIRMATION_REQUIRED', 'PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING'].includes(error.code)) {
         failure.uiState = await observeFailure(error);
+        // Capture eligibility before cleanup changes the visible authorization.
+        // Recovery never turns a previously armed or uncertain operation safe.
+        const candidate = !recovering && failure.code === 'NEEDS_ATTENTION'
+          ? await captureConnectionRecovery() : null;
         current = null;
         failure.retainedBrowserSafe = await cleanup() === true;
+        if (candidate && failure.retainedBrowserSafe && !signal?.aborted) {
+          connectionRecoveryCandidate = candidate;
+          failure.connectionRecoveryAllowed = true;
+        }
       }
       // Do not retain raw Playwright errors, which can contain fill arguments.
       throw failure;
@@ -227,7 +245,80 @@ export function createPlaywrightNadoRunner({
       observed.siteStage = website.stage;
       if (website.profile && addresses.has(activeNumber)) observed.siteProfileMatches = website.profile.shortAddress.toLowerCase() === shortAddress(addresses.get(activeNumber));
     } catch { /* Only explicitly allowed public states are recorded. */ }
+    try {
+      const panel = await connectionPanelState();
+      if (panel.reason || panel.alertCount > 0 || observed.localStatus === 'disconnected') {
+        observed.disconnectReason = panel.reason ?? 'unknown';
+      }
+    } catch { /* Never expose the original alert or raw exception. */ }
     return sanitizeUiObservation(observed);
+  }
+  async function connectionPanelState() {
+    const panel = localPage.locator('section[aria-labelledby="pairing"]:visible');
+    if (await localCall(() => panel.count()) !== 1) return { blocked: true };
+    const alerts = await localCall(() => panel.locator('[role="alert"]:visible').allInnerTexts());
+    const active = await localCall(() => localPage.locator(
+      'section[aria-labelledby="request-title"]:visible, section[aria-labelledby="proposal-title"]:visible',
+    ).count());
+    const receive = button(localPage, '接收官网连接请求');
+    const initializing = await localCall(() => receive.getAttribute('aria-busy')) === 'true';
+    return {
+      blocked: active > 0 || initializing || alerts.length > 1,
+      alertCount: alerts.length,
+      reason: alerts.length === 1 ? CONNECTION_FAILURES.get(alerts[0].trim()) : undefined,
+    };
+  }
+  async function checkRecoveryState(candidate, { beforeCleanup = false, expectedSite = 'pairing' } = {}) {
+    guard();
+    if (!candidate || !addresses.has(candidate.number) || addresses.get(candidate.number) !== candidate.address
+      || !validName(candidate.base) || usernameForWallet(candidate.number) !== candidate.base
+      || saveAttempts.size) fail('NEEDS_ATTENTION');
+    const local = await localState();
+    if (local.number !== String(candidate.number) || local.address !== candidate.address
+      || local.username !== candidate.base || local.authorized
+      || !(beforeCleanup ? ['已断开连接'] : ['尚未连接', '已断开连接']).includes(local.status)) fail('NEEDS_ATTENTION');
+    const panel = await connectionPanelState();
+    if (panel.blocked || (beforeCleanup && panel.alertCount !== 1)
+      || (panel.alertCount && panel.reason !== candidate.reason)) fail('NEEDS_ATTENTION');
+    const website = await site();
+    if (website.stage !== expectedSite || website.profile
+      || await nadoCall(() => nadoPage.locator(
+        '[role="alert"]:visible:not(#__next-route-announcer__), iframe:visible',
+      ).count())) fail('NEEDS_ATTENTION');
+  }
+  async function captureConnectionRecovery() {
+    try {
+      return await withUi(async () => {
+        const panel = await connectionPanelState();
+        if (!panel.reason) return null;
+        const candidate = Object.freeze({
+          number: activeNumber, address: addresses.get(activeNumber),
+          base: usernameForWallet(activeNumber), reason: panel.reason,
+        });
+        await checkRecoveryState(candidate, { beforeCleanup: true });
+        return candidate;
+      });
+    } catch { return null; }
+  }
+  async function recoverConnectionImpl(number) {
+    // Every invocation consumes the candidate, including wrong-number calls and
+    // failed navigation. Only a new independently checked failure can offer one.
+    const candidate = connectionRecoveryCandidate;
+    connectionRecoveryCandidate = null;
+    if (!candidate || candidate.number !== number || current || pendingPair || pendingOnboarding || pendingProposal) fail('NEEDS_ATTENTION');
+    await withUi(() => checkRecoveryState(candidate));
+    await nadoCall(() => nadoPage.goto(RECOVERY_URL, { waitUntil: 'domcontentloaded', timeout: timeoutMs }));
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      guard();
+      try { await waitSite(['signed_out'], Math.min(1500, Math.max(1, deadline - Date.now()))); break; }
+      catch (error) {
+        if (error?.name !== 'TimeoutError' || Date.now() >= deadline) throw error;
+        // Each bounded observation releases the shared UI queue for peers.
+      }
+    }
+    await withUi(() => checkRecoveryState(candidate, { expectedSite: 'signed_out' }));
+    return Object.freeze({ walletNumber: number, recovered: true });
   }
   async function assertWallet(number, address, { connected = false, allowExecuting = false } = {}) {
     const local = await localState();
@@ -623,6 +714,7 @@ export function createPlaywrightNadoRunner({
       return finishImpl(prepared, confirmation);
     }),
     readTermsCandidate: () => safeOperation(readTermsCandidate),
+    recoverConnection: number => safeOperation(() => recoverConnectionImpl(number), { recovering: true }),
     cleanup: async () => { signal?.removeEventListener('abort', abortCleanup); await cleanup(); },
     revokeUnusedAuthorization: () => safeOperation(revokeUnusedAuthorization),
     status: () => ({ stage, busy, walletNumber: activeNumber ?? null, preparedWalletNumber: current?.walletNumber ?? null, termsCandidate: lastCandidate }),

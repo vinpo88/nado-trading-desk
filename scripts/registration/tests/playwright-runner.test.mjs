@@ -53,11 +53,11 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
     } });
   });
   const counters = { signins: 0, walletconnect: 0, copies: 0, saves: 0, terms: 0, proposals: 0, approvals: 0,
-    staleTermsCloses: 0, staleTermsAgreements: 0, forbidden: 0 };
+    staleTermsCloses: 0, staleTermsAgreements: 0, forbidden: 0, navigations: 0 };
   const actions = [];
   let staleTermsVisible = startStaleTerms;
   let proposalWalletNumber = null;
-  const pairingUri = `wc:${pairingTag.repeat(32)}@2?symKey=${'cd'.repeat(32)}&expiryTimestamp=${Math.floor(Date.now() / 1000) + 600}`;
+  let pairingUri;
   let localPage; let nadoPage;
   const address = number => manifest[number - 1].address;
   const profile = (number, username) => `<button onclick="fixtureAction({type:'menu'})"><img alt="Ink" width="18" height="18" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="> ${address(number).slice(0, 6)}…${address(number).slice(-4)}<br>${esc(username)}</button>`;
@@ -84,13 +84,14 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
     <section aria-labelledby="pairing"><h2 id="pairing">从 Nado 发起连接</h2>
     <label>WalletConnect 连接码<input id="pairing-uri" type="password"></label>
     <button id="receive-proposal" onclick="fixtureAction({type:'proposal'})">接收官网连接请求</button>
-    <button onclick="document.getElementById('username-auth').checked=false;document.getElementById('local-status').textContent='尚未连接';document.getElementById('proposal').innerHTML=''">断开连接</button>
+    <button onclick="document.getElementById('username-auth').checked=false;document.getElementById('local-status').textContent='尚未连接';document.getElementById('proposal').innerHTML='';this.closest('section').querySelectorAll('[role=alert]').forEach(node=>node.remove())">断开连接</button>
     <p id="local-status" data-testid="connect-status">${startComplete ? '钱包已连接，等待官网请求' : '尚未连接'}</p><p id="outcome"></p>
     </section><div id="proposal"></div>
     </body></html>`;
   const initialWebsite = startStaleTerms ? staleTerms : startComplete ? profile(2, startComplete) : signedOut;
   await context.route('**/*', route => {
     const url = route.request().url();
+    if (url === NADO && route.request().isNavigationRequest()) counters.navigations++;
     const html = url === LOCAL ? localHTML : url === NADO ? `<!doctype html><body>${startupDelayed ? '<p role="status">Loading website…</p>' : initialWebsite}</body>` : '<!doctype html><body>Blocked fixture route</body>';
     return route.fulfill({ status: url === LOCAL || url === NADO ? 200 : 404, contentType: 'text/html; charset=utf-8', body: html });
   });
@@ -128,6 +129,9 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
     }
     if (action.type === 'walletconnect') {
       counters.walletconnect++;
+      // Each visible new pairing supplies a fresh, synthetic code. The receive
+      // handler compares it in memory, so replaying the previous code fails.
+      pairingUri = `wc:${pairingTag.repeat(31)}${counters.walletconnect.toString(16).padStart(2, '0')}@2?symKey=${'cd'.repeat(32)}&expiryTimestamp=${Math.floor(Date.now() / 1000) + 600}`;
       return deferPairingLink ? renderNado('<p role="status">Preparing connection link…</p>') : releasePairingLink();
     }
     if (action.type === 'copy') { counters.copies++; return; }
@@ -825,4 +829,203 @@ test('Terms continuation: changed declarations are rejected before Agree despite
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 0, 0]);
   assert.equal(await f.localPage.getByRole('checkbox', { name: '自动确认一次此用户名签名' }).isChecked(), false);
+});
+
+const connectionFailureMessages = [
+  ['等待官网连接超时，请重新生成连接链接。', 'pair_timeout'],
+  ['连接失败，请检查项目 ID、网络和官网连接链接后重试。', 'pair_failed'],
+  ['连接申请已过期，请在官网重新连接。', 'proposal_expired'],
+  ['连接申请已过期，请从官网重新生成链接。', 'proposal_expired'],
+];
+async function disconnectFixture(f, message = connectionFailureMessages[0][0]) {
+  await f.localPage.locator('section[aria-labelledby="pairing"]').evaluate((section, text) => {
+    section.querySelector('[data-testid="connect-status"]').textContent = '已断开连接';
+    const alert = document.createElement('p'); alert.role = 'alert'; alert.textContent = text;
+    section.appendChild(alert);
+  }, message);
+}
+async function failDisconnected(f, number = 2) {
+  let failure;
+  await assert.rejects(() => f.runner.runWallet(number, confirmation), error => {
+    assert.equal(error.code, 'NEEDS_ATTENTION'); failure = error; return true;
+  });
+  return failure;
+}
+async function recoverableFixture(t, message = connectionFailureMessages[0][0], options = {}) {
+  const f = await fixture(t, { deferProposal: true, timeoutMs: 500, ...options });
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'CONNECTION_PROPOSAL_PENDING');
+  await disconnectFixture(f, message);
+  return f;
+}
+
+test('explicit connection recovery: timeout resets only the website, then fresh pairing completes with one Save', async t => {
+  const f = await recoverableFixture(t);
+  const failure = await failDisconnected(f);
+  assert.equal(failure.connectionRecoveryAllowed, true);
+  assert.equal(failure.retainedBrowserSafe, true);
+  assert.deepEqual(failure.uiState, {
+    siteStage: 'pairing', localStatus: 'disconnected', fault: 'ui_state', disconnectReason: 'pair_timeout',
+    walletMatches: true, usernameMatches: true, authorizationArmed: false,
+  });
+  const before = [...f.actions];
+  assert.deepEqual(await f.runner.recoverConnection(2), { walletNumber: 2, recovered: true });
+  assert.equal(f.nadoPage.url(), NADO);
+  assert.equal(f.counters.navigations, 2);
+  assert.deepEqual(f.actions, before); // Navigation itself never pairs, approves, accepts, or saves.
+  assert.equal(await f.nadoPage.getByRole('button', { name: 'Sign In', exact: true }).and(f.nadoPage.locator(':visible')).count(), 1);
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'CONNECTION_PROPOSAL_PENDING');
+  await f.releaseProposal();
+  const record = await f.runner.runWallet(2, confirmation);
+  assert.equal(record.walletNumber, 2);
+  assert.equal(record.address, manifest[1].address);
+  assert.equal(record.loginComplete, true);
+  assert.deepEqual([f.counters.signins, f.counters.walletconnect, f.counters.copies, f.counters.proposals,
+    f.counters.approvals, f.counters.terms, f.counters.saves], [2, 2, 2, 2, 1, 1, 1]);
+  await assert.rejects(() => f.runner.recoverConnection(2), error => error.connectionRecoveryAllowed !== true);
+  assert.equal(f.counters.navigations, 2);
+  assert.equal(f.counters.saves, 1);
+});
+
+test('explicit connection recovery: exact failure and both expiry messages produce fixed public reason enums', async t => {
+  for (const [message, reason] of connectionFailureMessages.slice(1)) {
+    const f = await recoverableFixture(t, message);
+    const failure = await failDisconnected(f);
+    assert.equal(failure.connectionRecoveryAllowed, true);
+    assert.equal(failure.uiState.disconnectReason, reason);
+    assert.equal(JSON.stringify(failure.uiState).includes(message), false);
+    await f.runner.recoverConnection(2);
+    assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [2, 0, 0]);
+  }
+});
+
+test('explicit connection recovery: unknown, source rejection, near-match and ambiguous errors never authorize reset', async t => {
+  for (const message of [
+    'Synthetic unknown connection failure',
+    '官网来源验证失败，拒绝连接。',
+    connectionFailureMessages[0][0] + ' Extra unrecognized details',
+    connectionFailureMessages[0][0],
+  ]) {
+    const f = await recoverableFixture(t, message);
+    if (message === connectionFailureMessages[0][0]) {
+      await f.localPage.locator('section[aria-labelledby="pairing"]').evaluate(section => {
+        section.insertAdjacentHTML('beforeend', '<p role="alert">来源 UNKNOWN</p>');
+      });
+    }
+    const failure = await failDisconnected(f);
+    assert.notEqual(failure.connectionRecoveryAllowed, true);
+    assert.equal(failure.uiState.disconnectReason, 'unknown');
+    await assert.rejects(() => f.runner.recoverConnection(2), error => error.connectionRecoveryAllowed !== true);
+    assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+  }
+});
+
+test('explicit connection recovery: armed authority, wrong wallet or username, and active request are ineligible before cleanup', async t => {
+  for (const change of ['authorization', 'number', 'address', 'username', 'request']) {
+    const f = await recoverableFixture(t);
+    await f.localPage.locator('body').evaluate((body, kind) => {
+      if (kind === 'authorization') body.querySelector('#username-auth').checked = true;
+      if (kind === 'number') body.querySelector('#wallet-number').value = '3';
+      if (kind === 'address') body.querySelector('#wallet-address').textContent = '0x' + '3'.repeat(40);
+      if (kind === 'username') body.querySelector('#local-username').value = 'other2';
+      if (kind === 'request') body.querySelector('#proposal').innerHTML = '<section aria-labelledby="request-title"><h2 id="request-title">有请求等待你确认</h2></section>';
+    }, change);
+    const failure = await failDisconnected(f);
+    assert.notEqual(failure.connectionRecoveryAllowed, true);
+    assert.equal(failure.retainedBrowserSafe, true);
+    assert.equal(await f.localPage.getByRole('checkbox').isChecked(), false);
+    await assert.rejects(() => f.runner.recoverConnection(2));
+    assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+  }
+});
+
+test('explicit connection recovery: an existing Save journal cannot be reset even when disconnected with a known error', async t => {
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const f = await fixture(t, { deferProposal: true, timeoutMs: 500, resumeAttempt });
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
+  await disconnectFixture(f);
+  assert.notEqual((await failDisconnected(f)).connectionRecoveryAllowed, true);
+  await assert.rejects(() => f.runner.recoverConnection(2));
+  assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+});
+
+test('explicit connection recovery: wrong recovery number consumes the candidate without any navigation', async t => {
+  const f = await recoverableFixture(t);
+  assert.equal((await failDisconnected(f)).connectionRecoveryAllowed, true);
+  await assert.rejects(() => f.runner.recoverConnection(3), error => error.connectionRecoveryAllowed !== true);
+  await assert.rejects(() => f.runner.recoverConnection(2), error => error.connectionRecoveryAllowed !== true);
+  assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+});
+
+test('explicit connection recovery: rechecks wallet, username, authorization, active requests, alerts and website before navigation', async t => {
+  for (const change of ['wallet', 'username', 'authorization', 'request', 'alert', 'site']) {
+    const f = await recoverableFixture(t);
+    assert.equal((await failDisconnected(f)).connectionRecoveryAllowed, true);
+    if (change === 'site') await f.releaseProfile(2);
+    else await f.localPage.locator('body').evaluate((body, kind) => {
+      if (kind === 'wallet') body.querySelector('#wallet-address').textContent = '0x' + '3'.repeat(40);
+      if (kind === 'username') body.querySelector('#local-username').value = 'other2';
+      if (kind === 'authorization') body.querySelector('#username-auth').checked = true;
+      if (kind === 'request') body.querySelector('#proposal').innerHTML = '<section aria-labelledby="request-title">有请求等待你确认</section>';
+      if (kind === 'alert') body.querySelector('section[aria-labelledby="pairing"]').insertAdjacentHTML('beforeend', '<p role="alert">Unknown new failure</p>');
+    }, change);
+    await assert.rejects(() => f.runner.recoverConnection(2), error => error.connectionRecoveryAllowed !== true);
+    await assert.rejects(() => f.runner.recoverConnection(2));
+    assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+  }
+});
+
+test('explicit connection recovery: failed cleanup never exposes a reset candidate', async t => {
+  const f = await recoverableFixture(t);
+  await f.localPage.getByRole('button', { name: '断开连接', exact: true }).evaluate(button => {
+    button.onclick = () => { document.querySelector('[data-testid="connect-status"]').textContent = '正在等待官网连接请求'; };
+  });
+  const failure = await failDisconnected(f);
+  assert.equal(failure.retainedBrowserSafe, false);
+  assert.notEqual(failure.connectionRecoveryAllowed, true);
+  assert.equal(f.localPage.isClosed(), true);
+  await assert.rejects(() => f.runner.recoverConnection(2));
+  assert.equal(f.counters.navigations, 1);
+});
+
+test('explicit connection recovery: failed signed-out verification consumes the reset and never signs', async t => {
+  const f = await recoverableFixture(t);
+  assert.equal((await failDisconnected(f)).connectionRecoveryAllowed, true);
+  await f.nadoPage.route(NADO, route => route.fulfill({
+    status: 200, contentType: 'text/html', body: '<p>Unrecognized page after navigation</p>',
+  }));
+  await assert.rejects(() => f.runner.recoverConnection(2), error => error.connectionRecoveryAllowed !== true);
+  await assert.rejects(() => f.runner.recoverConnection(2));
+  assert.equal(f.counters.approvals, 0);
+  assert.equal(f.counters.saves, 0);
+});
+
+test('explicit connection recovery: the known Next shadow announcer on Nado cannot block a reset', async t => {
+  const f = await recoverableFixture(t);
+  await f.nadoPage.locator('body').evaluate(body => {
+    const container = document.createElement('next-route-announcer');
+    const announcer = document.createElement('div');
+    announcer.id = '__next-route-announcer__'; announcer.role = 'alert';
+    announcer.style.cssText = 'position:absolute;height:1px;width:1px;clip:rect(0 0 0 0);overflow:hidden';
+    announcer.textContent = 'Nado';
+    container.attachShadow({ mode: 'open' }).appendChild(announcer); body.appendChild(container);
+  });
+  assert.equal(await f.nadoPage.locator('[role="alert"]:visible').count(), 1);
+  assert.equal((await failDisconnected(f)).connectionRecoveryAllowed, true);
+  await f.runner.recoverConnection(2);
+  assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [2, 0, 0]);
+});
+
+test('explicit connection recovery: real website alerts and visible challenge frames block resetting', async t => {
+  for (const obstruction of ['alert', 'iframe']) {
+    const f = await recoverableFixture(t);
+    await f.nadoPage.locator('body').evaluate((body, kind) => {
+      const node = document.createElement(kind === 'alert' ? 'p' : 'iframe');
+      if (kind === 'alert') { node.role = 'alert'; node.textContent = 'Synthetic access restriction'; }
+      else node.title = 'Synthetic verification challenge';
+      body.appendChild(node);
+    }, obstruction);
+    assert.notEqual((await failDisconnected(f)).connectionRecoveryAllowed, true);
+    await assert.rejects(() => f.runner.recoverConnection(2));
+    assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+  }
 });

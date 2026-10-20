@@ -285,8 +285,20 @@ test('worker config defaults to 10000 descending; paths are config-relative and 
     { userDataDir: 'daily-profile' }, { browser: 'iab' }, { profileName: '../daily' },
     { localUrl: 'https://example.com/connect' }, { localUrl: 'http://127.0.0.1:18270/connect?wc=secret' },
     { laneindex: 1 }, { timeoutMs: 120000 }, { laneCount: 2, laneIndex: 2 },
+    { autoUnlockCredential: '../secret' }, { autoUnlockCredential: '' }, { autoUnlockCredential: 123 },
+    { password: 'not-a-config-field' },
   ]) assert.throws(() => normalizeWorkerConfig({ walletsPath: 'wallets.json', progressPath: 'progress.ndjson', ...bad },
     { repoDir: repo, configPath: join(repo, 'worker.json') }), { code: 'CONFIG_INVALID' });
+});
+
+test('auto unlock config contains only an optional local credential name', () => {
+  const repo = resolve('fixture-repo');
+  const raw = { walletsPath: 'wallets.json', progressPath: 'progress.ndjson' };
+  const options = { repoDir: repo, configPath: join(repo, 'worker.json') };
+  assert.equal(Object.hasOwn(normalizeWorkerConfig(raw, options), 'autoUnlockCredential'), false);
+  const config = normalizeWorkerConfig({ ...raw, autoUnlockCredential: 'registration-vault' }, options);
+  assert.equal(config.autoUnlockCredential, 'registration-vault');
+  assert.equal(Object.hasOwn(config, 'password'), false);
 });
 
 test('CLI recognizes bootstrap, explicit consent and recovery; rejects implicit or duplicate options', () => {
