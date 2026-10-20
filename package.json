@@ -25,7 +25,7 @@
     "registration:parallel": "node scripts/registration/group.mjs start",
     "registration:parallel-status": "node scripts/registration/group.mjs status",
     "registration:parallel-stop": "node scripts/registration/group.mjs stop",
-    "test:registration": "node --test scripts/registration/tests/planner.test.mjs scripts/registration/tests/cli.test.mjs scripts/registration/tests/cua-runner.test.mjs scripts/registration/tests/runtime.test.mjs scripts/registration/tests/runtime-group.test.mjs scripts/registration/tests/ui-coordinator.test.mjs scripts/registration/tests/group.test.mjs",
+    "test:registration": "node --test scripts/registration/tests/planner.test.mjs scripts/registration/tests/cli.test.mjs scripts/registration/tests/cua-runner.test.mjs scripts/registration/tests/runtime.test.mjs scripts/registration/tests/runtime-group.test.mjs scripts/registration/tests/ui-coordinator.test.mjs scripts/registration/tests/ui-diagnostics.test.mjs scripts/registration/tests/group.test.mjs",
     "test:registration:browser": "node --test scripts/registration/tests/playwright-runner.test.mjs",
     "prepare": "node scripts/install-git-hooks.mjs"
   },

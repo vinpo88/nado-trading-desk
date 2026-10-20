@@ -6,19 +6,20 @@ import { createHash, randomUUID } from 'node:crypto';
 import { normalizeConfig, validateWalletManifest, normalizeProgressRecord, mergeProgress, createPlan, isVerified } from './planner.mjs';
 import { parseProgress } from './cli.mjs';
 import { validateTermsConfirmation, assertTermsMatch } from './cua-runner.mjs';
+import { sanitizeUiObservation } from './ui-diagnostics.mjs';
 
 const PLAN_KEYS = ['bounds', 'start', 'end', 'direction', 'laneCount', 'laneIndex'];
 const CONFIG_KEYS = new Set([...PLAN_KEYS, 'walletsPath', 'progressPath', 'progressPaths', 'usernamePrefix',
   'browser', 'profileName', 'localUrl', 'timeoutMs', 'pollIntervalMs', 'maxUsernameCandidates']);
 const CODES = new Set(['CONFIG_INVALID', 'PUBLIC_FILE_INVALID', 'WORKER_ALREADY_RUNNING', 'WORKER_LOCK_STALE',
   'PROFILE_NOT_DEDICATED', 'STORAGE_ERROR', 'BROWSER_START_FAILED', 'BROWSER_CLOSED', 'VAULT_LOCKED',
-  'TERMS_CONFIRMATION_REQUIRED', 'TERMS_INVALID', 'CONFIRMATION_INVALID', 'NEEDS_ATTENTION', 'ABORTED',
+  'TERMS_CONFIRMATION_REQUIRED', 'PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING', 'TERMS_INVALID', 'CONFIRMATION_INVALID', 'NEEDS_ATTENTION', 'ABORTED',
   'ORIGIN_MISMATCH', 'RECORD_INVALID', 'ATTEMPT_OUTSIDE_PLAN', 'RUNNER_FAILED', 'NOT_RUNNING']);
 const RUNNER_STAGES = new Set(['preparing', 'pairing', 'prepared', 'checking_username', 'switching_ink',
   'verified', 'accepting_terms', 'username_introduction', 'save_pending', 'awaiting_username_result',
   'opening_walletconnect', 'waiting_pairing_link', 'clearing_pairing_clipboard', 'copying_pairing_link',
   'reading_pairing_link', 'validating_pairing_link', 'filling_pairing_link',
-  'waiting_connection_proposal', 'approving_connection', 'waiting_onboarding']);
+  'sending_connection_request', 'waiting_connection_proposal', 'approving_connection', 'waiting_onboarding', 'resetting_stale_session', 'waiting_website']);
 export const TERMINAL_PHASES = new Set(['completed', 'stopped', 'failed']);
 export class WorkerError extends Error {
   constructor(code) {
@@ -499,7 +500,8 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
         if (!RUNNER_STAGES.has(event?.stage)) return;
         if (!current || event.walletNumber !== current.walletNumber || event.address !== current.address) fail('RECORD_INVALID');
         if (event.stage !== 'save_pending') {
-          await writeState({ phase: 'working', stage: event.stage });
+          await writeState({ phase: 'working', stage: event.stage,
+            ...(event.stage === 'sending_connection_request' || event.stage === 'approving_connection' ? { waitingSince: null } : {}) });
           return;
         }
         const next = validateAttempt({ walletNumber: event.walletNumber, address: event.address, username: event.username, saveAttempted: event.saveAttempted });
@@ -513,7 +515,7 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
     for (const item of plan.items) {
       if (await stopRequested()) break;
       current = item;
-      await writeState({ phase: 'working', currentWalletNumber: item.walletNumber });
+      await writeState({ phase: 'working', currentWalletNumber: item.walletNumber, waitingSince: null });
       let record;
       while (!record && !(await stopRequested())) {
         try { record = await runner.runWallet(item.walletNumber, confirmation); }
@@ -523,6 +525,20 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
           if (code === 'VAULT_LOCKED') {
             await writeState({ phase: 'waiting_unlock' });
             await wait(config.pollIntervalMs);
+          } else if (['PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING'].includes(code)) {
+            // The UI runner permits this only while waiting for the pairing
+            // link or the post-connection page, before any username signature.
+            // Keep the same browser and exact plan item; do not replay clicks.
+            if (attempt) fail('NEEDS_ATTENTION');
+            await writeState({
+              phase: 'waiting_connection', stage: ({ PAIRING_LINK_PENDING: 'waiting_pairing_link',
+                ONBOARDING_PENDING: 'waiting_onboarding', CONNECTION_PROPOSAL_PENDING: 'waiting_connection_proposal',
+                WEBSITE_LOADING_PENDING: 'waiting_website' })[code],
+              waitingSince: state.waitingSince ?? now(),
+            });
+            // Check stop promptly without holding either browser's UI lock.
+            const slices = Math.max(1, Math.ceil(5000 / Math.min(config.pollIntervalMs, 1000)));
+            for (let index = 0; index < slices && !(await stopRequested()); index++) await wait(Math.min(config.pollIntervalMs, 1000));
           } else if (code === 'TERMS_CONFIRMATION_REQUIRED') {
             const candidate = termsCandidate(await runner.readTermsCandidate(), runId);
             await atomicWriteJson(config.candidatePath, candidate);
@@ -539,7 +555,10 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
               }
               await wait(config.pollIntervalMs);
             }
-          } else throw new WorkerError(code);
+          } else {
+            await writeState({ uiState: sanitizeUiObservation(error?.uiState) });
+            throw new WorkerError(code);
+          }
         }
       }
       if (!record) break;
@@ -560,10 +579,12 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
   } catch (error) {
     if (!releaseProfile) throw new WorkerError(safeErrorCode(error));
     const code = safeErrorCode(error);
+    const uiState = sanitizeUiObservation(error?.uiState);
     // A failed atomic writer must not keep masking the terminal state write.
     await writeQueue.catch(() => {});
     writeQueue = Promise.resolve();
-    await writeState({ phase: 'failed', errorCode: code }).catch(() => {});
+    await writeState({ phase: 'failed', errorCode: code,
+      ...(Object.keys(uiState).length ? { uiState } : {}) }).catch(() => {});
     return { ...state, phase: 'failed', errorCode: code };
   } finally {
     if (timer) clearInterval(timer);

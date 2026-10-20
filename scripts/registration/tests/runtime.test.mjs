@@ -12,6 +12,92 @@ import {
 import { parseWorkerArgs, prepareManifestFromVisibleUi } from '../worker.mjs';
 import { parseProgress } from '../cli.mjs';
 
+for (const pendingCode of ['PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING']) test(`${pendingCode} preserves the browser and exact wallet until it becomes available`, async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  let attempts = 0, pendingWaits = 0;
+  deps.createRunner = () => ({
+    runWallet: async number => {
+      events.calls.push(number);
+      if (++attempts < 3) throw new WorkerError(pendingCode);
+      return verified(number);
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => {
+    const state = await workerStatus(config);
+    assert.equal(state.phase, 'waiting_connection');
+    assert.equal(state.stage, ({ PAIRING_LINK_PENDING: 'waiting_pairing_link',
+      ONBOARDING_PENDING: 'waiting_onboarding', CONNECTION_PROPOSAL_PENDING: 'waiting_connection_proposal',
+      WEBSITE_LOADING_PENDING: 'waiting_website' })[pendingCode]);
+    assert.equal(state.currentWalletNumber, 1);
+    assert.equal(state.completed, 0);
+    assert.equal(events.closes, 0);
+    pendingWaits++;
+  };
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'completed');
+  assert.deepEqual(events.calls, [1, 1, 1]);
+  assert.equal(events.launches, 1);
+  assert.equal(events.closes, 1);
+  assert.equal(events.cleanups, 1);
+  assert.ok(pendingWaits > 0);
+  assert.equal(parseProgress(await readFile(config.progressPath, 'utf8')).length, 1);
+});
+
+test('stop during pending pairing wait does not reconnect, sign, or advance', async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  deps.createRunner = () => ({
+    runWallet: async number => { events.calls.push(number); throw new WorkerError('PAIRING_LINK_PENDING'); },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => { await requestWorkerStop(config); };
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'stopped');
+  assert.deepEqual(events.calls, [1]);
+  assert.equal(state.completed, 0);
+  assert.equal(events.closes, 1);
+  assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
+});
+
+test('pairing retry cannot be used when a Save intent exists', async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  deps.createRunner = options => ({
+    runWallet: async number => {
+      events.calls.push(number);
+      await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: 'ybtl1', saveAttempted: true });
+      throw new WorkerError('PAIRING_LINK_PENDING');
+    },
+    cleanup: async () => {},
+  });
+  deps.sleep = async () => assert.fail('must not retry after Save');
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.errorCode, 'NEEDS_ATTENTION');
+  assert.deepEqual(events.calls, [1]);
+  assert.equal((await readPublicJson(config.attemptPath)).saveAttempted, true);
+});
+
+test('fatal UI diagnosis persists only approved enums and booleans before cleanup', async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  deps.createRunner = () => ({
+    runWallet: async () => {
+      const error = new WorkerError('NEEDS_ATTENTION');
+      error.uiState = { fault: 'ui_state', localStatus: 'error', siteStage: 'pairing',
+        walletMatches: true, authorizationArmed: false, rawError: 'never-persist-this-detail',
+        connectionCode: 'never-persist-this-connection-code', usernameMatches: 'true' };
+      throw error;
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.deepEqual(state.uiState, { fault: 'ui_state', localStatus: 'error', siteStage: 'pairing',
+    walletMatches: true, authorizationArmed: false });
+  const saved = await readFile(config.statusPath, 'utf8');
+  assert.equal(saved.includes('never-persist'), false);
+  assert.equal(events.cleanups, 1);
+});
+
 const address = number => `0x${number.toString(16).padStart(40, '0')}`;
 const manifest = count => Array.from({ length: count }, (_, index) => ({ walletNumber: index + 1, address: address(index + 1) }));
 const verified = number => ({

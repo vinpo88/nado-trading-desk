@@ -8,13 +8,14 @@ import * as runtime from './runtime.mjs';
 import { launchDedicatedBrowser, prepareManifestFromVisibleUi } from './worker.mjs';
 import { createPlaywrightNadoRunner } from './playwright-runner.mjs';
 import { createUiCoordinator } from './ui-coordinator.mjs';
+import { sanitizeUiObservation } from './ui-diagnostics.mjs';
 
 const ENTRY = fileURLToPath(import.meta.url);
 const REPO = resolve(dirname(ENTRY), '../..');
 const delay = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
 const print = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const PHASES = new Set(['not_started', 'starting', 'running', 'setup_browser', 'waiting_manifest', 'waiting_unlock',
-  'waiting_manifest_export', 'exporting_manifest', 'working', 'save_pending', 'waiting_terms', 'completed', 'stopped', 'failed']);
+  'waiting_manifest_export', 'exporting_manifest', 'working', 'save_pending', 'waiting_terms', 'waiting_connection', 'completed', 'stopped', 'failed']);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HELP = `本地并发注册组（同一个 Node 进程，独立的专用浏览器）
 node scripts/registration/group.mjs start|run|status|stop --config GROUP.json
@@ -73,10 +74,12 @@ export function publicWorkerState(raw) {
   }
   if (UUID.test(raw?.runId ?? '')) state.runId = raw.runId;
   if (typeof raw?.processAlive === 'boolean') state.processAlive = raw.processAlive;
-  for (const key of ['startedAt', 'updatedAt']) {
+  for (const key of ['startedAt', 'updatedAt', 'waitingSince']) {
     if (typeof raw?.[key] === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(raw[key]) && Number.isFinite(Date.parse(raw[key]))) state[key] = raw[key];
   }
   if (typeof raw?.stage === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(raw.stage)) state.stage = raw.stage;
+  const uiState = sanitizeUiObservation(raw?.uiState);
+  if (Object.keys(uiState).length) state.uiState = uiState;
   if (/^[a-f0-9]{64}$/.test(raw?.termsDigest ?? '')) state.termsDigest = raw.termsDigest;
   if (raw?.errorCode !== undefined) state.errorCode = runtime.safeErrorCode({ code: raw.errorCode });
   return state;
