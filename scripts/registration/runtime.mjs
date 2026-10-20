@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { normalizeConfig, validateWalletManifest, normalizeProgressRecord, mergeProgress, createPlan, isVerified } from './planner.mjs';
 import { parseProgress } from './cli.mjs';
-import { validateTermsConfirmation, assertTermsMatch } from './cua-runner.mjs';
+import { validateTermsConfirmation } from './cua-runner.mjs';
 import { sanitizeUiObservation } from './ui-diagnostics.mjs';
 
 const PLAN_KEYS = ['bounds', 'start', 'end', 'direction', 'laneCount', 'laneIndex'];
@@ -558,10 +558,10 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
             while (!(await stopRequested())) {
               const accepted = await readPublicJson(config.consentPath, { optional: true });
               if (accepted?.runId === runId && accepted.digest === candidate.digest) {
-                // Re-read the visible declarations before any checkbox/click.
-                const observed = await runner.readTermsCandidate();
+                // Resume the same wallet. The runner re-reads and matches Terms
+                // immediately before any agreement click if that dialog remains;
+                // it also safely handles an already-advanced website page.
                 confirmation = validateTermsConfirmation({ ...candidate.terms, confirmed: true, context: `本地 CLI 明确确认；run ${runId}` });
-                assertTermsMatch(observed, confirmation);
                 await writeState({ phase: 'working' });
                 break;
               }

@@ -418,7 +418,10 @@ export function createPlaywrightNadoRunner({
     return waitOnboarding(number, address, base);
   }
   async function proposalStillLoading(local) {
-    if (await localCall(() => localPage.locator('[role="alert"]:visible').count())) return false;
+    // Next's route announcer is a clipped, 1px role=alert in an open shadow
+    // root. Playwright considers it visible, even when empty. Only connection
+    // errors rendered by the pairing panel can end this connection wait.
+    if (await localCall(() => localPage.locator('section[aria-labelledby="pairing"] [role="alert"]:visible').count())) return false;
     if (local.status === '正在等待官网连接请求') return true;
     if (local.status !== '尚未连接') return false;
     // Bridge import/initialization runs before it can publish "connecting".

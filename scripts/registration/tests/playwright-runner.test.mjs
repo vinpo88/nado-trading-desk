@@ -81,10 +81,12 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
     </label><p id="wallet-address" data-testid="connect-wallet-address">${address(startComplete ? 2 : 1)}</p>
     <label>本次官网用户名<input id="local-username" value="ybtl${startComplete ? 2 : 1}"></label>
     <label><input id="username-auth" type="checkbox"${initialAuthorized ? ' checked' : ''}>自动确认一次此用户名签名</label>
+    <section aria-labelledby="pairing"><h2 id="pairing">从 Nado 发起连接</h2>
     <label>WalletConnect 连接码<input id="pairing-uri" type="password"></label>
     <button id="receive-proposal" onclick="fixtureAction({type:'proposal'})">接收官网连接请求</button>
     <button onclick="document.getElementById('username-auth').checked=false;document.getElementById('local-status').textContent='尚未连接';document.getElementById('proposal').innerHTML=''">断开连接</button>
-    <p id="local-status" data-testid="connect-status">${startComplete ? '钱包已连接，等待官网请求' : '尚未连接'}</p><div id="proposal"></div><p id="outcome"></p>
+    <p id="local-status" data-testid="connect-status">${startComplete ? '钱包已连接，等待官网请求' : '尚未连接'}</p><p id="outcome"></p>
+    </section><div id="proposal"></div>
     </body></html>`;
   const initialWebsite = startStaleTerms ? staleTerms : startComplete ? profile(2, startComplete) : signedOut;
   await context.route('**/*', route => {
@@ -669,8 +671,8 @@ test('delayed bridge initialization: idle without a busy disabled receive button
 test('delayed bridge initialization: a visible alert blocks idle retry even while receive is busy', async t => {
   const f = await fixture(t, { deferredBridgeInitialization: true, deferProposal: true, timeoutMs: 500 });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'CONNECTION_PROPOSAL_PENDING');
-  await f.localPage.locator('body').evaluate(body => {
-    body.insertAdjacentHTML('beforeend', '<p role="alert">Synthetic connection initialization error</p>');
+  await f.localPage.locator('section[aria-labelledby="pairing"]').evaluate(section => {
+    section.insertAdjacentHTML('beforeend', '<p role="alert">Synthetic connection initialization error</p>');
   });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 0, 0, 0]);
@@ -752,8 +754,8 @@ test('safe retention requires visibly revoked authority and disconnected bridge'
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'CONNECTION_PROPOSAL_PENDING');
   await f.localPage.getByRole('button', { name: '断开连接', exact: true })
     .evaluate(button => { button.onclick = () => {}; });
-  await f.localPage.locator('body').evaluate(body => {
-    body.insertAdjacentHTML('beforeend', '<p role="alert">Synthetic connection error</p>');
+  await f.localPage.locator('section[aria-labelledby="pairing"]').evaluate(section => {
+    section.insertAdjacentHTML('beforeend', '<p role="alert">Synthetic connection error</p>');
   });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => {
     assert.equal(error.code, 'NEEDS_ATTENTION');
@@ -762,4 +764,65 @@ test('safe retention requires visibly revoked authority and disconnected bridge'
   });
   assert.equal(f.localPage.isClosed(), true);
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+});
+
+for (const title of ['', 'Nado 交易台']) {
+  test(`Next route announcer with ${title ? 'a route title' : 'empty text'} does not reject a pending connection`, async t => {
+    const f = await fixture(t, { deferProposal: true, timeoutMs: 500 });
+    await f.localPage.locator('body').evaluate((body, text) => {
+      // Match Next 15 app-router-announcer.js, including its open shadow root
+      // and clipped 1px box. Playwright :visible matches this accessibility node.
+      const container = document.createElement('next-route-announcer');
+      container.style.cssText = 'position:absolute';
+      const announcer = document.createElement('div');
+      announcer.ariaLive = 'assertive';
+      announcer.id = '__next-route-announcer__';
+      announcer.role = 'alert';
+      announcer.style.cssText = 'position:absolute;border:0;height:1px;margin:-1px;padding:0;width:1px;clip:rect(0 0 0 0);overflow:hidden;white-space:nowrap;word-wrap:normal';
+      announcer.textContent = text;
+      container.attachShadow({ mode: 'open' }).appendChild(announcer);
+      body.appendChild(container);
+    }, title);
+    assert.equal(await f.localPage.locator('[role="alert"]:visible').count(), 1);
+    assert.equal(await f.localPage.locator('#__next-route-announcer__').textContent(), title);
+    assert.equal(await f.localPage.locator('section[aria-labelledby="pairing"] [role="alert"]').count(), 0);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'CONNECTION_PROPOSAL_PENDING');
+      assert.equal(f.localPage.isClosed(), false);
+      assert.equal(await f.localPage.getByTestId('connect-status').innerText(), '正在等待官网连接请求');
+      assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 0, 0, 0]);
+    }
+    await f.releaseProposal();
+    const record = await f.runner.runWallet(2, confirmation);
+    assert.equal(record.walletNumber, 2);
+    assert.equal(record.username, 'ybtl2');
+    assert.equal(record.loginComplete, true);
+    assert.deepEqual([f.counters.signins, f.counters.copies, f.counters.proposals,
+      f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 1, 1, 1]);
+  });
+}
+
+test('Terms continuation: a matching completed profile after waiting for consent is verified without Save', async t => {
+  const f = await fixture(t);
+  await assert.rejects(() => f.runner.runWallet(2), error => error.code === 'TERMS_CONFIRMATION_REQUIRED');
+  assert.deepEqual((await f.runner.readTermsCandidate()).declarations, declarations);
+  await f.releaseProfile(2, 'ybtl2');
+  const record = await f.runner.runWallet(2, confirmation);
+  assert.equal(record.walletNumber, 2);
+  assert.equal(record.address, manifest[1].address);
+  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.loginComplete, true);
+  assert.equal(record.usernameAutoSigned, false);
+  assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 0, 0]);
+});
+
+test('Terms continuation: changed declarations are rejected before Agree despite prior confirmation', async t => {
+  const f = await fixture(t);
+  await assert.rejects(() => f.runner.runWallet(2), error => error.code === 'TERMS_CONFIRMATION_REQUIRED');
+  assert.deepEqual((await f.runner.readTermsCandidate()).declarations, confirmation.declarations);
+  await f.nadoPage.getByRole('dialog').locator('li').first()
+    .evaluate(node => { node.textContent = 'Changed synthetic declaration requiring new consent.'; });
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
+  assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 0, 0]);
+  assert.equal(await f.localPage.getByRole('checkbox', { name: '自动确认一次此用户名签名' }).isChecked(), false);
 });

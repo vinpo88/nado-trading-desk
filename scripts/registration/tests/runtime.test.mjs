@@ -11,6 +11,7 @@ import {
 } from '../runtime.mjs';
 import { parseWorkerArgs, prepareManifestFromVisibleUi } from '../worker.mjs';
 import { parseProgress } from '../cli.mjs';
+import { assertTermsMatch } from '../cua-runner.mjs';
 
 for (const pendingCode of ['PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING']) test(`${pendingCode} preserves the browser and exact wallet until it becomes available`, async t => {
   const { config, deps, events } = await fixture(t, 1);
@@ -482,15 +483,16 @@ test('waiting for manual vault unlock stops promptly', async t => {
   assert.deepEqual(events.calls, [3]); assert.equal(events.closes, 1);
 });
 
-test('terms wait requires current-run digest confirmation, then rechecks visible declarations', async t => {
+test('terms wait requires current-run digest confirmation and delegates live checks to the same runner', async t => {
   const { config, deps, events } = await fixture(t, 1);
-  let checks = 0;
+  let checks = 0, waits = 0;
   deps.createRunner = () => ({
     runWallet: async (number, confirmation) => {
       events.calls.push(number);
       if (!confirmation) throw new WorkerError('TERMS_CONFIRMATION_REQUIRED');
       assert.equal(confirmation.confirmed, true);
       assert.deepEqual(confirmation.declarations, terms.declarations);
+      assertTermsMatch(terms, confirmation); // The runner owns its final visible-UI check.
       return verified(number);
     },
     readTermsCandidate: async () => { checks++; return terms; }, cleanup: async () => {},
@@ -500,12 +502,59 @@ test('terms wait requires current-run digest confirmation, then rechecks visible
     const state = await workerStatus(config);
     assert.equal(state.phase, 'waiting_terms');
     assert.equal(candidate.runId, state.runId);
+    assert.deepEqual(events.calls, [1]);
+    if (++waits === 1) {
+      await atomicWriteJson(config.consentPath, { runId: 'another-run', digest: candidate.digest });
+      return;
+    }
+    if (waits === 2) {
+      await atomicWriteJson(config.consentPath, { runId: state.runId, digest: '0'.repeat(64) });
+      return;
+    }
     await assert.rejects(acceptWorkerTerms(config, '0'.repeat(64)), { code: 'CONFIRMATION_INVALID' });
     await acceptWorkerTerms(config, candidate.digest);
   };
   const state = await runWorker(config, deps);
   assert.equal(state.phase, 'completed');
-  assert.deepEqual(events.calls, [1, 1]); assert.equal(checks, 2);
+  assert.deepEqual(events.calls, [1, 1]); assert.equal(checks, 1);
+  assert.equal(waits, 3);
+});
+
+for (const advancedStage of ['introduction', 'complete']) test(`Terms disappears before consent; the same runner resumes ${advancedStage} without another candidate read`, async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  let visibleStage = 'terms', reads = 0, saves = 0;
+  deps.createRunner = options => ({
+    runWallet: async (number, confirmation) => {
+      events.calls.push(number);
+      if (!confirmation) throw new WorkerError('TERMS_CONFIRMATION_REQUIRED');
+      assert.equal(visibleStage, advancedStage);
+      assert.equal(confirmation.confirmed, true);
+      assertTermsMatch(terms, confirmation);
+      if (advancedStage === 'introduction') {
+        saves++;
+        await options.onEvent({ stage: 'save_pending', walletNumber: number,
+          address: address(number), username: 'ybtl1', saveAttempted: true });
+      }
+      return verified(number);
+    },
+    readTermsCandidate: async () => {
+      reads++;
+      if (visibleStage !== 'terms') throw Object.assign(new Error('dialog is gone'), { name: 'TimeoutError' });
+      return terms;
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => {
+    visibleStage = advancedStage;
+    await acceptWorkerTerms(config, (await readPublicJson(config.candidatePath)).digest);
+  };
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'completed');
+  assert.deepEqual(events.calls, [1, 1]);
+  assert.equal(reads, 1);
+  assert.equal(saves, advancedStage === 'introduction' ? 1 : 0);
+  assert.equal(parseProgress(await readFile(config.progressPath, 'utf8')).length, 1);
+  assert.equal(await readPublicJson(config.attemptPath, { optional: true }), null);
 });
 
 test('old-run terms consent is never reused and stop while waiting closes the browser', async t => {
@@ -523,16 +572,56 @@ test('old-run terms consent is never reused and stop while waiting closes the br
   assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
 });
 
-test('changed visible Terms after consent stop instead of clicking agreement', async t => {
-  const { config, deps } = await fixture(t, 1);
-  let count = 0;
+test('runner rejects changed visible Terms after consent without a success record', async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  let reads = 0, agreements = 0;
   deps.createRunner = () => ({
-    runWallet: async () => { throw new WorkerError('TERMS_CONFIRMATION_REQUIRED'); },
-    readTermsCandidate: async () => (++count === 1 ? terms : { ...terms, declarations: terms.declarations.map(x => x + ' changed') }),
+    runWallet: async (number, confirmation) => {
+      events.calls.push(number);
+      if (!confirmation) throw new WorkerError('TERMS_CONFIRMATION_REQUIRED');
+      try { assertTermsMatch({ ...terms, declarations: terms.declarations.map(x => x + ' changed') }, confirmation); }
+      catch { throw new WorkerError('NEEDS_ATTENTION'); }
+      agreements++;
+      return verified(number);
+    },
+    readTermsCandidate: async () => { reads++; return terms; },
     cleanup: async () => {},
   });
   deps.sleep = async () => { await acceptWorkerTerms(config, (await readPublicJson(config.candidatePath)).digest); };
-  assert.equal((await runWorker(config, deps)).phase, 'failed');
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.errorCode, 'NEEDS_ATTENTION');
+  assert.deepEqual(events.calls, [1, 1]);
+  assert.equal(reads, 1);
+  assert.equal(agreements, 0);
+  assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
+});
+
+test('Terms consent never removes an unresolved Save intent or bypasses the runner replay guard', async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  const attempt = { walletNumber: 1, address: address(1), username: 'ybtl1', saveAttempted: true };
+  await mkdir(config.stateDir, { recursive: true });
+  await atomicWriteJson(config.attemptPath, attempt);
+  let reads = 0;
+  deps.createRunner = options => ({
+    runWallet: async (number, confirmation) => {
+      events.calls.push(number);
+      assert.deepEqual(options.resumeAttempt, attempt);
+      assert.deepEqual(await readPublicJson(config.attemptPath), attempt);
+      if (!confirmation) throw new WorkerError('TERMS_CONFIRMATION_REQUIRED');
+      // An unresolved prior Save may only be verified, never submitted again.
+      throw new WorkerError('NEEDS_ATTENTION');
+    },
+    readTermsCandidate: async () => { reads++; return terms; },
+    cleanup: async () => {},
+  });
+  deps.sleep = async () => { await acceptWorkerTerms(config, (await readPublicJson(config.candidatePath)).digest); };
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.errorCode, 'NEEDS_ATTENTION');
+  assert.deepEqual(events.calls, [1, 1]);
+  assert.equal(reads, 1);
+  assert.deepEqual(await readPublicJson(config.attemptPath), attempt);
   assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
 });
 
