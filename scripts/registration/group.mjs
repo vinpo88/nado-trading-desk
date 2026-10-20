@@ -15,7 +15,7 @@ const REPO = resolve(dirname(ENTRY), '../..');
 const delay = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
 const print = value => process.stdout.write(JSON.stringify(value, null, 2) + '\n');
 const PHASES = new Set(['not_started', 'starting', 'running', 'setup_browser', 'waiting_manifest', 'waiting_unlock',
-  'waiting_manifest_export', 'exporting_manifest', 'working', 'save_pending', 'waiting_terms', 'waiting_connection', 'completed', 'stopped', 'failed']);
+  'waiting_manifest_export', 'exporting_manifest', 'working', 'save_pending', 'waiting_terms', 'waiting_connection', 'waiting_attention', 'completed', 'stopped', 'failed']);
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const HELP = `本地并发注册组（同一个 Node 进程，独立的专用浏览器）
 node scripts/registration/group.mjs start|run|status|stop --config GROUP.json
@@ -24,7 +24,8 @@ node scripts/registration/group.mjs recover-locks --config GROUP.json --confirm-
 成员路径相对于组配置文件；不得重叠钱包范围、复用 profile 或进度输出。
 start：隐藏后台进程并显示专用浏览器；run：前台运行。
 status：只读各成员进度；stop：所有成员完成当前钱包并保存后停止。
-等待解锁或条款时及时停止。条款仍需逐成员通过 worker accept-terms 明确确认。`;
+等待解锁、条款或人工检查时及时停止。waiting_attention 会保留已安全断开的浏览器，供人工检查，不会自动重试。
+条款仍需逐成员通过 worker accept-terms 明确确认。`;
 const fail = code => { throw new runtime.WorkerError(code); };
 
 export function parseGroupArgs(args) {

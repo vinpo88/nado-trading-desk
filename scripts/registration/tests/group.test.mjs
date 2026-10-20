@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import {
   parseGroupArgs, loadGroupConfig, groupStatus, stopGroup, runGroup, startGroup, publicWorkerState,
 } from '../group.mjs';
-import { readPublicJson, WorkerError } from '../runtime.mjs';
+import { readPublicJson, runWorker, WorkerError } from '../runtime.mjs';
 
 const tick = () => new Promise(resolveWait => setImmediate(resolveWait));
 function deferred() {
@@ -306,6 +306,8 @@ test('status is read-only, identifies members, and never exposes unknown raw fie
   assert.equal(JSON.stringify(result).includes('secret'), false);
   assert.equal(JSON.stringify(result).includes('private'), false);
   assert.deepEqual(publicWorkerState({ phase: 'wc:unsafe', errorCode: 'raw secret' }), { phase: 'failed', errorCode: 'RUNNER_FAILED' });
+  assert.deepEqual(publicWorkerState({ phase: 'waiting_attention', retainedBrowserSafe: true }),
+    { phase: 'waiting_attention' });
 });
 
 test('group integrates with real runtime lease and independent ledgers using only synthetic browsers', async t => {
@@ -340,5 +342,63 @@ test('group integrates with real runtime lease and independent ledgers using onl
   const finalStatus = await groupStatus(group);
   assert.equal(finalStatus.processAlive, false);
   assert.deepEqual(finalStatus.workers.map(member => member.completed), [2, 2]);
+  assert.equal(await readPublicJson(group.configs[0].globalLockPath, { optional: true }), null);
+});
+
+test('one member retains attention while its peer completes; group stop closes without replay', { timeout: 5000 }, async t => {
+  const { root, group } = await fixture(t);
+  const wallets = Array.from({ length: 4 }, (_, index) => ({
+    walletNumber: index + 1, address: `0x${String(index + 1).repeat(40)}`,
+  }));
+  await writeFile(join(root, 'wallets.json'), JSON.stringify(wallets));
+  const peerClosed = deferred();
+  const visited = [], closed = [];
+  let attentionChecks = 0;
+  const result = await runGroup(group, {
+    sleep: tick,
+    runWorker: (config, deps, options) => runWorker(config, {
+      ...deps,
+      sleep: async () => {
+        assert.equal(config.browser, 'edge');
+        await peerClosed.promise;
+        const state = await groupStatus(group);
+        assert.equal(state.processAlive, true);
+        assert.deepEqual(state.workers.map(member => member.phase), ['waiting_attention', 'completed']);
+        assert.deepEqual(visited.toSorted((a, b) => a - b), [1, 2, 4]);
+        assert.deepEqual(closed, ['fixture-1']);
+        assert.notEqual(await readPublicJson(config.profileLockPath, { optional: true }), null);
+        assert.notEqual(await readPublicJson(config.globalLockPath, { optional: true }), null);
+        assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
+        attentionChecks++;
+        await stopGroup(group);
+      },
+    }, options),
+    launch: async config => ({
+      localPage: { getByTestId: () => ({ isVisible: async () => true }) }, nadoPage: {},
+      isClosed: () => false,
+      close: async () => {
+        closed.push(config.profileName);
+        if (config.browser === 'chrome') peerClosed.resolve();
+      },
+    }),
+    createRunner: () => ({
+      runWallet: async number => {
+        visited.push(number);
+        if (number === 4) throw Object.assign(new WorkerError('NEEDS_ATTENTION'), { retainedBrowserSafe: true });
+        return {
+          walletNumber: number, address: wallets[number - 1].address, username: `ybtl${number}`,
+          status: 'verified_login_and_ink', loginComplete: true, websiteSignedIn: true,
+          websiteNetwork: 'Ink', approvedChainId: 57073, agentTransactionsSent: 0,
+        };
+      },
+      cleanup: async () => {},
+    }),
+  });
+  assert.equal(result.phase, 'stopped');
+  assert.equal(attentionChecks, 1);
+  assert.deepEqual(result.workers.map(member => member.phase), ['stopped', 'completed']);
+  assert.deepEqual(visited.toSorted((a, b) => a - b), [1, 2, 4]);
+  assert.deepEqual(closed, ['fixture-1', 'fixture-0']);
+  for (const config of group.configs) assert.equal(await readPublicJson(config.profileLockPath, { optional: true }), null);
   assert.equal(await readPublicJson(group.configs[0].globalLockPath, { optional: true }), null);
 });

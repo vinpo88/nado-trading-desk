@@ -272,17 +272,12 @@ export async function createNadoBridge(options: BridgeOptions, overrides: Partia
     pending = null;
     publish({ status: "connected", request: null, error: "请求已过期，请在官网重新发起。" });
   };
-  const onAuthenticate = (event: WalletKitTypes.SessionAuthenticate) => {
-    if (handle) void within(handle.kit.rejectSessionAuthenticate({ id: event.id, reason: UNSUPPORTED }), 3_000).catch(() => undefined);
-    if (!stopped) publish({ error: "暂不支持此快捷登录流程，请使用普通钱包连接。" });
-  };
   function removeListeners(kit: BridgeKit) {
     kit.off("session_proposal", onProposal);
     kit.off("session_request", onRequest);
     kit.off("session_delete", onDelete);
     kit.off("proposal_expire", onProposalExpire);
     kit.off("session_request_expire", onRequestExpire);
-    kit.off("session_authenticate", onAuthenticate);
   }
   function shutdown(message: string | null = null): Promise<void> {
     if (disposing) return disposing;
@@ -464,7 +459,9 @@ export async function createNadoBridge(options: BridgeOptions, overrides: Partia
     handle.kit.on("session_delete", onDelete);
     handle.kit.on("proposal_expire", onProposalExpire);
     handle.kit.on("session_request_expire", onRequestExpire);
-    handle.kit.on("session_authenticate", onAuthenticate);
+    // Do not advertise support for session_authenticate. SignClient suppresses
+    // the ordinary proposal fallback whenever an authenticate listener exists.
+    // The fallback still requires the same source, chain and user approval checks.
     publish({ status: "idle", error: null });
     return bridge;
   } catch {

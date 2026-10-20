@@ -98,6 +98,134 @@ test('fatal UI diagnosis persists only approved enums and booleans before cleanu
   assert.equal(events.cleanups, 1);
 });
 
+for (const afterSave of [false, true]) test(`safe UI attention retains context and locks until stop, afterSave=${afterSave}`, async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  const expectedAttempt = { walletNumber: 1, address: address(1), username: 'ybtl1', saveAttempted: true };
+  let waits = 0;
+  deps.createRunner = options => ({
+    runWallet: async number => {
+      events.calls.push(number);
+      if (afterSave) await options.onEvent({ stage: 'save_pending', ...expectedAttempt });
+      const error = new WorkerError('NEEDS_ATTENTION');
+      error.retainedBrowserSafe = true; // Synthetic runner already revoked/disconnected.
+      error.uiState = { siteStage: 'unknown', localStatus: 'disconnected',
+        authorizationArmed: false, rawError: 'never-persist-this-detail' };
+      throw error;
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async ms => {
+    assert.ok(ms <= 1000);
+    const state = await workerStatus(config);
+    assert.equal(state.phase, 'waiting_attention');
+    assert.equal(state.processAlive, true);
+    assert.equal(state.errorCode, 'NEEDS_ATTENTION');
+    assert.equal(state.currentWalletNumber, 1);
+    assert.equal(state.completed, 0);
+    assert.equal(events.closes, 0);
+    assert.equal(events.cleanups, 0);
+    assert.deepEqual(events.calls, [1]);
+    assert.equal((await readPublicJson(config.globalLockPath)).runId, state.runId);
+    assert.equal((await readPublicJson(config.profileLockPath)).runId, state.runId);
+    assert.deepEqual(await readPublicJson(config.attemptPath, { optional: true }), afterSave ? expectedAttempt : null);
+    assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
+    if (++waits === 2) await requestWorkerStop(config);
+  };
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'stopped');
+  assert.equal(waits, 2);
+  assert.equal(events.closes, 1);
+  assert.equal(events.cleanups, 1);
+  assert.deepEqual(events.calls, [1]);
+  assert.deepEqual(await readPublicJson(config.attemptPath, { optional: true }), afterSave ? expectedAttempt : null);
+  assert.equal(await readPublicJson(config.globalLockPath, { optional: true }), null);
+  assert.equal(await readPublicJson(config.profileLockPath, { optional: true }), null);
+  const saved = await readFile(config.statusPath, 'utf8');
+  assert.equal(saved.includes('never-persist'), false);
+  assert.equal(saved.includes('retainedBrowserSafe'), false);
+});
+
+test('closing a retained browser ends attention without retrying the wallet', async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  let closed = false;
+  deps.launch = async () => ({
+    localPage: {}, nadoPage: {}, isClosed: () => closed,
+    close: async () => { events.closes++; },
+  });
+  deps.createRunner = () => ({
+    runWallet: async number => {
+      events.calls.push(number);
+      throw Object.assign(new WorkerError('NEEDS_ATTENTION'), { retainedBrowserSafe: true });
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => {
+    assert.equal((await workerStatus(config)).phase, 'waiting_attention');
+    assert.equal(events.closes, 0);
+    closed = true;
+  };
+  assert.equal((await runWorker(config, deps)).phase, 'stopped');
+  assert.deepEqual(events.calls, [1]);
+  assert.equal(events.closes, 1);
+  assert.equal(await readPublicJson(config.profileLockPath, { optional: true }), null);
+});
+
+for (const retainedBrowserSafe of [undefined, false, 'true']) test(`attention requires a strict cleanup attestation: ${retainedBrowserSafe}`, async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  deps.createRunner = () => ({
+    runWallet: async number => {
+      events.calls.push(number);
+      throw Object.assign(new WorkerError('NEEDS_ATTENTION'), { retainedBrowserSafe });
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => assert.fail('unverified cleanup must close, not wait');
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.errorCode, 'NEEDS_ATTENTION');
+  assert.deepEqual(events.calls, [1]);
+  assert.equal(events.closes, 1);
+});
+
+for (const code of ['STORAGE_ERROR', 'RECORD_INVALID', 'ORIGIN_MISMATCH']) test(`${code} still closes even with a cleanup attestation`, async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  deps.createRunner = () => ({
+    runWallet: async () => { throw Object.assign(new WorkerError(code), { retainedBrowserSafe: true }); },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => assert.fail('non-UI failures must close');
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.errorCode, code);
+  assert.equal(events.closes, 1);
+});
+
+for (const failure of ['record', 'storage']) test(`sanitized runner cannot turn ${failure} callback failure into attention`, async t => {
+  const { config, deps, events } = await fixture(t, 1);
+  deps.createRunner = options => ({
+    runWallet: async number => {
+      events.calls.push(number);
+      if (failure === 'storage') await mkdir(config.attemptPath);
+      try {
+        await options.onEvent({ stage: 'save_pending', walletNumber: number,
+          address: address(failure === 'record' ? number + 1 : number), username: 'ybtl1', saveAttempted: true });
+        assert.fail('event must fail before any Save');
+      } catch {
+        throw Object.assign(new WorkerError('NEEDS_ATTENTION'), { retainedBrowserSafe: true });
+      }
+    },
+    cleanup: async () => { events.cleanups++; },
+  });
+  deps.sleep = async () => assert.fail('runtime callback failure must not wait');
+  const state = await runWorker(config, deps);
+  assert.equal(state.phase, 'failed');
+  assert.equal(state.errorCode, failure === 'record' ? 'RECORD_INVALID' : 'STORAGE_ERROR');
+  assert.equal(state.completed, 0);
+  assert.deepEqual(events.calls, [1]);
+  assert.equal(events.closes, 1);
+  assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
+});
+
 const address = number => `0x${number.toString(16).padStart(40, '0')}`;
 const manifest = count => Array.from({ length: count }, (_, index) => ({ walletNumber: index + 1, address: address(index + 1) }));
 const verified = number => ({

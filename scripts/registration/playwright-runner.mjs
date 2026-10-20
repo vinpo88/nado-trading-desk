@@ -152,21 +152,28 @@ export function createPlaywrightNadoRunner({
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = withUi(async () => {
       try {
-        if (localPage.isClosed()) return;
+        if (localPage.isClosed()) return false;
         // Only touch the bound local page. Closing it is the fallback that
         // prevents an unconsumed in-memory authorization from surviving.
         const url = new URL(localPage.url());
-        if (url.origin !== localOrigin || url.pathname.replace(/\/$/, '') !== '/connect') { await localPage.close({ runBeforeUnload: false }); return; }
+        if (url.origin !== localOrigin || url.pathname.replace(/\/$/, '') !== '/connect') { await localPage.close({ runBeforeUnload: false }); return false; }
         await localPage.bringToFront();
         if (await authBox().isVisible() && await authBox().isChecked()) await authBox().uncheck({ timeout: 3000 });
         const disconnect = button(localPage, '断开连接');
         if (await disconnect.isVisible() && await disconnect.isEnabled()) await disconnect.click({ timeout: 3000 });
-        if (await authBox().isVisible() && await authBox().isChecked()) throw new Error();
+        // A resolved cleanup is not enough to retain an unlocked browser. Verify
+        // the visible bridge has no remaining connection or signing authority.
+        await localPage.getByTestId('connect-status')
+          .filter({ hasText: /^(尚未连接|已断开连接)$/ })
+          .waitFor({ state: 'visible', timeout: 3000 });
+        if (!await authBox().isVisible() || await authBox().isChecked()) throw new Error();
+        return true;
       } catch {
         try { if (!localPage.isClosed()) await localPage.close({ runBeforeUnload: false }); } catch { /* Worker must close the owning context too. */ }
+        return false;
       }
     });
-    try { await cleanupPromise; } finally { cleanupPromise = null; }
+    try { return await cleanupPromise; } finally { cleanupPromise = null; }
   }
   const abortCleanup = () => { void cleanup(); };
   signal?.addEventListener('abort', abortCleanup, { once: true });
@@ -180,7 +187,7 @@ export function createPlaywrightNadoRunner({
       if (!(error instanceof RegistrationUiError) || !['VAULT_LOCKED', 'TERMS_CONFIRMATION_REQUIRED', 'PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING'].includes(error.code)) {
         failure.uiState = await observeFailure(error);
         current = null;
-        await cleanup();
+        failure.retainedBrowserSafe = await cleanup() === true;
       }
       // Do not retain raw Playwright errors, which can contain fill arguments.
       throw failure;
@@ -312,6 +319,16 @@ export function createPlaywrightNadoRunner({
       if (error?.name !== 'TimeoutError') throw error;
       const local = await assertWallet(number, address, { connected: true });
       if (local.authorized || local.username !== base || saveAttempts.size) fail('NEEDS_ATTENTION');
+      if (Date.now() >= pendingOnboarding.deadline) {
+        const observed = await site();
+        if (observed.stage === 'connected_unnamed'
+          && observed.profile?.shortAddress.toLowerCase() === shortAddress(address)) {
+          // Account 1 is a placeholder, not proof of username registration.
+          // If no onboarding form arrives, retain the reviewed failure state
+          // for inspection rather than polling and stealing focus indefinitely.
+          fail('NEEDS_ATTENTION');
+        }
+      }
       fail('ONBOARDING_PENDING');
     }
     await assertWallet(number, address, { connected: true });
@@ -397,7 +414,7 @@ export function createPlaywrightNadoRunner({
     pendingProposal = null;
     await event('approving_connection');
     await localCall(() => button(localPage, '同意连接此钱包').click({ timeout: timeoutMs }));
-    pendingOnboarding = { number, address, base };
+    pendingOnboarding = { number, address, base, deadline: Date.now() + timeoutMs };
     return waitOnboarding(number, address, base);
   }
   async function proposalStillLoading(local) {

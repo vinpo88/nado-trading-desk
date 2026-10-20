@@ -399,7 +399,7 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
   }
   const owner = { pid: process.pid, runId, token: randomUUID(), createdAt: now() };
   let releaseGlobal, releaseProfile, browser, runner, timer, writeQueue = Promise.resolve();
-  let stopped = false, current = null, attempt = null, confirmation, completed = 0, total = 0;
+  let stopped = false, current = null, attempt = null, confirmation, completed = 0, total = 0, runnerEventError = null;
   let state = { formatVersion: 1, pid: owner.pid, runId, phase: 'starting', startedAt: now(), updatedAt: now(), total: 0, completed: 0, remaining: 0 };
   const writeState = patch => {
     state = { ...state, ...patch, updatedAt: now() };
@@ -497,19 +497,26 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
       usernameForWallet: walletNumber => `${config.usernamePrefix}${walletNumber}`,
       resumeAttempt: attempt ?? undefined,
       onEvent: async event => {
-        if (!RUNNER_STAGES.has(event?.stage)) return;
-        if (!current || event.walletNumber !== current.walletNumber || event.address !== current.address) fail('RECORD_INVALID');
-        if (event.stage !== 'save_pending') {
-          await writeState({ phase: 'working', stage: event.stage,
-            ...(event.stage === 'sending_connection_request' || event.stage === 'approving_connection' ? { waitingSince: null } : {}) });
-          return;
+        try {
+          if (!RUNNER_STAGES.has(event?.stage)) return;
+          if (!current || event.walletNumber !== current.walletNumber || event.address !== current.address) fail('RECORD_INVALID');
+          if (event.stage !== 'save_pending') {
+            await writeState({ phase: 'working', stage: event.stage,
+              ...(event.stage === 'sending_connection_request' || event.stage === 'approving_connection' ? { waitingSince: null } : {}) });
+            return;
+          }
+          const next = validateAttempt({ walletNumber: event.walletNumber, address: event.address, username: event.username, saveAttempted: event.saveAttempted });
+          if (!current || next.walletNumber !== current.walletNumber || next.address !== current.address
+            || (attempt && JSON.stringify(attempt) !== JSON.stringify(next))) fail('RECORD_INVALID');
+          await atomicWriteJson(config.attemptPath, next);
+          attempt = next;
+          await writeState({ phase: 'save_pending', stage: 'save_pending' });
+        } catch (error) {
+          // The UI runner sanitizes callback exceptions. Keep our own failure
+          // classification so storage/record failures can never become UI waits.
+          runnerEventError = error;
+          throw error;
         }
-        const next = validateAttempt({ walletNumber: event.walletNumber, address: event.address, username: event.username, saveAttempted: event.saveAttempted });
-        if (!current || next.walletNumber !== current.walletNumber || next.address !== current.address
-          || (attempt && JSON.stringify(attempt) !== JSON.stringify(next))) fail('RECORD_INVALID');
-        await atomicWriteJson(config.attemptPath, next);
-        attempt = next;
-        await writeState({ phase: 'save_pending', stage: 'save_pending' });
       },
     });
     for (const item of plan.items) {
@@ -518,8 +525,13 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
       await writeState({ phase: 'working', currentWalletNumber: item.walletNumber, waitingSince: null });
       let record;
       while (!record && !(await stopRequested())) {
-        try { record = await runner.runWallet(item.walletNumber, confirmation); }
+        runnerEventError = null;
+        try {
+          record = await runner.runWallet(item.walletNumber, confirmation);
+          if (runnerEventError) throw runnerEventError;
+        }
         catch (error) {
+          if (runnerEventError) throw runnerEventError;
           const code = safeErrorCode(error);
           if (browser.isClosed?.()) { stopped = true; break; }
           if (code === 'VAULT_LOCKED') {
@@ -555,6 +567,13 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
               }
               await wait(config.pollIntervalMs);
             }
+          } else if (code === 'NEEDS_ATTENTION' && error?.retainedBrowserSafe === true && browser.isClosed?.() === false) {
+            // Only the runner can attest that it revoked unused authorization
+            // and disconnected the still-open local page. Keep this promise
+            // and its locks alive, but never call the runner again or replay Save.
+            await writeState({ phase: 'waiting_attention', errorCode: code,
+              uiState: sanitizeUiObservation(error?.uiState), waitingSince: now() });
+            while (!(await stopRequested())) await wait(Math.min(config.pollIntervalMs, 1000));
           } else {
             await writeState({ uiState: sanitizeUiObservation(error?.uiState) });
             throw new WorkerError(code);

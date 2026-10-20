@@ -19,7 +19,8 @@ node scripts/registration/worker.mjs accept-terms --config FILE --digest SHA256
 node scripts/registration/worker.mjs recover-locks --config FILE --confirm-closed
 open：打开专用浏览器，供手动恢复保险库和导出公开地址清单；不会注册或签名。
 start：隐藏后台 Node 进程，显示专用浏览器；run：在当前终端运行。
-stop：完成当前钱包并保存后停止；等待解锁或条款确认时及时停止。
+stop：完成当前钱包并保存后停止；等待解锁、条款或人工检查时及时停止。
+waiting_attention：保留已安全断开的专用浏览器供检查，不会自动重试；stop 或关闭窗口后结束。
 status：只读进程和进度；accept-terms：明确确认当前运行候选文件中的六项声明。
 必须手动恢复、解锁保险库；不会复制其他浏览器的数据。
 默认从 10000 倒序，采用配置中的公开清单和已核验进度。`;

@@ -729,3 +729,37 @@ test('unnamed Account 1 profile: stale website session signs out and pairs fresh
   assert.deepEqual(f.actions, ['menu', 'signout', 'signin', 'walletconnect', 'copy', 'proposal', 'approve', 'agree', 'next', 'save']);
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 1]);
 });
+
+test('unnamed Account 1 after pairing stops waiting and never records a completed registration', async t => {
+  const f = await fixture(t, { deferOnboarding: true, timeoutMs: 500 });
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'ONBOARDING_PENDING');
+  await f.releaseProfile(2, 'Account 1');
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => {
+    assert.equal(error.code, 'NEEDS_ATTENTION');
+    assert.equal(error.stage, 'waiting_onboarding');
+    assert.equal(error.uiState.siteStage, 'connected_unnamed');
+    assert.equal(error.retainedBrowserSafe, true);
+    return true;
+  });
+  assert.equal(f.localPage.isClosed(), false);
+  assert.equal(await f.localPage.getByTestId('connect-status').innerText(), '尚未连接');
+  assert.equal(await f.localPage.getByRole('checkbox', { name: '自动确认一次此用户名签名' }).isChecked(), false);
+  assert.deepEqual([f.counters.signins, f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 0, 0]);
+});
+
+test('safe retention requires visibly revoked authority and disconnected bridge', async t => {
+  const f = await fixture(t, { deferProposal: true, timeoutMs: 500 });
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'CONNECTION_PROPOSAL_PENDING');
+  await f.localPage.getByRole('button', { name: '断开连接', exact: true })
+    .evaluate(button => { button.onclick = () => {}; });
+  await f.localPage.locator('body').evaluate(body => {
+    body.insertAdjacentHTML('beforeend', '<p role="alert">Synthetic connection error</p>');
+  });
+  await assert.rejects(() => f.runner.runWallet(2, confirmation), error => {
+    assert.equal(error.code, 'NEEDS_ATTENTION');
+    assert.equal(error.retainedBrowserSafe, false);
+    return true;
+  });
+  assert.equal(f.localPage.isClosed(), true);
+  assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+});
