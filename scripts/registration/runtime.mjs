@@ -15,7 +15,10 @@ const CODES = new Set(['CONFIG_INVALID', 'PUBLIC_FILE_INVALID', 'WORKER_ALREADY_
   'TERMS_CONFIRMATION_REQUIRED', 'TERMS_INVALID', 'CONFIRMATION_INVALID', 'NEEDS_ATTENTION', 'ABORTED',
   'ORIGIN_MISMATCH', 'RECORD_INVALID', 'ATTEMPT_OUTSIDE_PLAN', 'RUNNER_FAILED', 'NOT_RUNNING']);
 const RUNNER_STAGES = new Set(['preparing', 'pairing', 'prepared', 'checking_username', 'switching_ink',
-  'verified', 'accepting_terms', 'username_introduction', 'save_pending', 'awaiting_username_result']);
+  'verified', 'accepting_terms', 'username_introduction', 'save_pending', 'awaiting_username_result',
+  'opening_walletconnect', 'waiting_pairing_link', 'clearing_pairing_clipboard', 'copying_pairing_link',
+  'reading_pairing_link', 'validating_pairing_link', 'filling_pairing_link',
+  'waiting_connection_proposal', 'approving_connection', 'waiting_onboarding']);
 export const TERMINAL_PHASES = new Set(['completed', 'stopped', 'failed']);
 export class WorkerError extends Error {
   constructor(code) {
@@ -30,6 +33,7 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const sleep = ms => new Promise(resolveWait => setTimeout(resolveWait, ms));
 const now = () => new Date().toISOString();
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const groupLeases = new WeakMap();
 const pathString = value => typeof value === 'string' && value.trim() && !value.includes('\0');
 const int = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
 
@@ -109,7 +113,12 @@ export async function ensureOwnedDirectory(root, target) {
       if (!info.isDirectory() || info.isSymbolicLink()) fail('STORAGE_ERROR');
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
-      await mkdir(part, { mode: 0o700 });
+      try { await mkdir(part, { mode: 0o700 }); }
+      catch (created) {
+        if (created?.code !== 'EEXIST') throw created;
+        const concurrent = await lstat(part);
+        if (!concurrent.isDirectory() || concurrent.isSymbolicLink()) fail('STORAGE_ERROR');
+      }
     }
   }
 }
@@ -263,6 +272,7 @@ export async function recoverWorkerLocks(config, confirmedClosed) {
     const paths = [config.globalLockPath, config.profileLockPath];
     const locks = await Promise.all(paths.map(path => readPublicJson(path, { optional: true })));
     if (locks.some(lock => lock && pidAlive(lock.pid))) fail('WORKER_ALREADY_RUNNING');
+    if (locks[0]?.members !== undefined) fail('WORKER_LOCK_STALE');
     // Cross-profile cleanup is prohibited. A global lock owned by another
     // profile must be recovered using that profile's original configuration.
     if (locks[0] && locks[1] && locks[0].runId !== locks[1].runId) fail('WORKER_LOCK_STALE');
@@ -278,7 +288,114 @@ export async function recoverWorkerLocks(config, confirmedClosed) {
   });
 }
 
-export async function runWorker(config, dependencies, { setup = false, runId = randomUUID() } = {}) {
+// A group owns the same OS-user lock as a standalone worker. Only this module
+// can issue a lease; it covers fixed, non-overlapping plans and public snapshots.
+export function validateWorkerGroup(configs) {
+  if (!Array.isArray(configs) || configs.length < 2 || configs.length > 4) fail('CONFIG_INVALID');
+  const first = configs[0];
+  const paths = new Set(), numbers = new Set();
+  const normalizedPath = path => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+  const inside = (root, path) => {
+    const rel = relative(normalizedPath(root), normalizedPath(path));
+    return !rel || (!rel.startsWith('..') && !isAbsolute(rel));
+  };
+  const privateDirs = configs.flatMap(config => [config.stateDir, config.profileDir]);
+  for (const config of configs) {
+    if (config.repoDir !== first.repoDir || config.globalLockPath !== first.globalLockPath
+      || config.walletsPath !== first.walletsPath || config.localUrl !== first.localUrl) fail('CONFIG_INVALID');
+    if ([config.walletsPath, config.progressPath, ...config.progressPaths]
+      .some(path => privateDirs.some(root => inside(root, path)))) fail('CONFIG_INVALID');
+    for (const path of [config.profileDir, config.stateDir, config.progressPath]) {
+      const key = process.platform === 'win32' ? path.toLowerCase() : path;
+      if (paths.has(key)) fail('CONFIG_INVALID');
+      paths.add(key);
+    }
+    const plan = normalizeConfig(config.plan);
+    const count = Math.abs(plan.end - plan.start) + 1;
+    const step = plan.direction === 'asc' ? 1 : -1;
+    for (let offset = plan.laneIndex; offset < count; offset += plan.laneCount) {
+      const number = plan.start + offset * step;
+      if (numbers.has(number)) fail('CONFIG_INVALID');
+      numbers.add(number);
+    }
+  }
+  return configs;
+}
+
+export async function withWorkerGroupLease(configs, operation, { runId = randomUUID() } = {}) {
+  validateWorkerGroup(configs);
+  if (typeof operation !== 'function') fail('CONFIG_INVALID');
+  const owner = { pid: process.pid, runId, token: randomUUID(), createdAt: now(),
+    members: configs.map(config => config.profileLockPath) };
+  let release;
+  const lease = Object.freeze({});
+  try {
+    await withControlLock(configs[0], async () => {
+      release = await acquireLock(configs[0].globalLockPath, owner);
+      for (const config of configs) {
+        const lock = await readPublicJson(config.profileLockPath, { optional: true });
+        if (lock) fail(pidAlive(lock.pid) ? 'WORKER_ALREADY_RUNNING' : 'WORKER_LOCK_STALE');
+      }
+    });
+    let manifest, records;
+    try {
+      manifest = validateWalletManifest(await readPublicJson(configs[0].walletsPath));
+      const outputs = new Set(configs.map(config => config.progressPath));
+      const sources = new Set(configs.flatMap(config => config.progressPaths));
+      const arrays = [];
+      for (const path of sources) {
+        const text = await readPublicText(path, { optional: outputs.has(path) });
+        if (outputs.has(path) && text?.trimStart().startsWith('[')) fail('PUBLIC_FILE_INVALID');
+        arrays.push(text === null ? [] : parseProgress(text));
+      }
+      records = mergeProgress(arrays, manifest);
+    } catch { fail('PUBLIC_FILE_INVALID'); }
+    const entries = new Map(configs.map(config => [digest(config), {
+      manifest, records, plan: createPlan(config.plan, manifest, records), active: false, runId,
+    }]));
+    groupLeases.set(lease, entries);
+    return await operation(lease);
+  } finally {
+    // Keep global ownership even if a caller mistakenly uses Promise.all and
+    // another member rejects before its peers have closed their browsers.
+    const entries = groupLeases.get(lease);
+    if (entries) await Promise.allSettled([...entries.values()].map(entry => entry.finished).filter(Boolean));
+    groupLeases.delete(lease);
+    await release?.();
+  }
+}
+
+export async function recoverWorkerGroupLocks(configs, confirmedClosed) {
+  validateWorkerGroup(configs);
+  if (confirmedClosed !== true) fail('CONFIRMATION_INVALID');
+  return withControlLock(configs[0], async () => {
+    const paths = [configs[0].globalLockPath, ...configs.map(config => config.profileLockPath)];
+    const locks = await Promise.all(paths.map(path => readPublicJson(path, { optional: true })));
+    if (locks.some(lock => lock && pidAlive(lock.pid))) fail('WORKER_ALREADY_RUNNING');
+    const global = locks[0];
+    if (global && (!Array.isArray(global.members) || JSON.stringify([...global.members].sort())
+      !== JSON.stringify(paths.slice(1).sort()))) fail('WORKER_LOCK_STALE');
+    if (global && locks.slice(1).some(lock => lock && lock.runId !== global.runId)) fail('WORKER_LOCK_STALE');
+    for (let index = 0; index < paths.length; index++) {
+      if (!locks[index]) continue;
+      const current = await readPublicJson(paths[index]);
+      if (current?.token !== locks[index].token || pidAlive(current.pid)) fail('WORKER_LOCK_STALE');
+      await unlink(paths[index]);
+    }
+    return { phase: 'locks_recovered' };
+  });
+}
+
+export async function runWorker(config, dependencies, { setup = false, runId, lease } = {}) {
+  const leased = lease === undefined ? null : groupLeases.get(lease)?.get(digest(config));
+  if (lease !== undefined && (!leased || leased.active || setup)) fail('CONFIG_INVALID');
+  runId ??= leased?.runId ?? randomUUID();
+  if (leased && runId !== leased.runId) fail('CONFIG_INVALID');
+  let finishLease;
+  if (leased) {
+    leased.active = true;
+    leased.finished = new Promise(resolveFinished => { finishLease = resolveFinished; });
+  }
   const owner = { pid: process.pid, runId, token: randomUUID(), createdAt: now() };
   let releaseGlobal, releaseProfile, browser, runner, timer, writeQueue = Promise.resolve();
   let stopped = false, current = null, attempt = null, confirmation, completed = 0, total = 0;
@@ -302,43 +419,51 @@ export async function runWorker(config, dependencies, { setup = false, runId = r
   };
   try {
     await ensureOwnedDirectory(config.repoDir, config.stateDir);
-    await withControlLock(config, async () => {
-      releaseGlobal = await acquireLock(config.globalLockPath, owner);
+    if (leased) {
       releaseProfile = await acquireLock(config.profileLockPath, owner);
-    });
+    } else {
+      await withControlLock(config, async () => {
+        releaseGlobal = await acquireLock(config.globalLockPath, owner);
+        releaseProfile = await acquireLock(config.profileLockPath, owner);
+      });
+    }
     await writeState({});
     timer = setInterval(() => { writeState({}).catch(() => { stopped = true; }); }, 5000);
     timer.unref?.();
     await ensureDedicatedProfile(config);
     let manifest = [], records = [], plan = { items: [] };
     if (!setup) {
-      if (await readPublicText(config.walletsPath, { optional: true }) === null) {
-        if (!dependencies.prepareManifest) fail('PUBLIC_FILE_INVALID');
-        if (await stopRequested()) { await writeState({ phase: 'stopped' }); return state; }
-        await writeState({ phase: 'waiting_manifest' });
-        await launch();
-        const exported = await dependencies.prepareManifest(config, browser, {
-          shouldStop: stopRequested,
-          onStage: phase => {
-            if (!['waiting_unlock', 'waiting_manifest_export', 'exporting_manifest'].includes(phase)) fail('PUBLIC_FILE_INVALID');
-            return writeState({ phase });
-          },
-        });
-        if (await stopRequested()) { await writeState({ phase: 'stopped' }); return state; }
-        if (!exported) fail('PUBLIC_FILE_INVALID');
-        await saveManifestIfMissing(config.walletsPath, exported);
-      }
-      try {
-        manifest = validateWalletManifest(await readPublicJson(config.walletsPath));
-        const arrays = [];
-        for (const path of config.progressPaths) {
-          const text = await readPublicText(path, { optional: path === config.progressPath });
-          if (path === config.progressPath && text?.trimStart().startsWith('[')) fail('PUBLIC_FILE_INVALID');
-          arrays.push(text === null ? [] : parseProgress(text));
+      if (leased) {
+        manifest = leased.manifest; records = leased.records; plan = leased.plan;
+      } else {
+        if (await readPublicText(config.walletsPath, { optional: true }) === null) {
+          if (!dependencies.prepareManifest) fail('PUBLIC_FILE_INVALID');
+          if (await stopRequested()) { await writeState({ phase: 'stopped' }); return state; }
+          await writeState({ phase: 'waiting_manifest' });
+          await launch();
+          const exported = await dependencies.prepareManifest(config, browser, {
+            shouldStop: stopRequested,
+            onStage: phase => {
+              if (!['waiting_unlock', 'waiting_manifest_export', 'exporting_manifest'].includes(phase)) fail('PUBLIC_FILE_INVALID');
+              return writeState({ phase });
+            },
+          });
+          if (await stopRequested()) { await writeState({ phase: 'stopped' }); return state; }
+          if (!exported) fail('PUBLIC_FILE_INVALID');
+          await saveManifestIfMissing(config.walletsPath, exported);
         }
-        records = mergeProgress(arrays, manifest);
-        plan = createPlan(config.plan, manifest, records);
-      } catch (error) { throw error instanceof WorkerError ? error : new WorkerError('PUBLIC_FILE_INVALID'); }
+        try {
+          manifest = validateWalletManifest(await readPublicJson(config.walletsPath));
+          const arrays = [];
+          for (const path of config.progressPaths) {
+            const text = await readPublicText(path, { optional: path === config.progressPath });
+            if (path === config.progressPath && text?.trimStart().startsWith('[')) fail('PUBLIC_FILE_INVALID');
+            arrays.push(text === null ? [] : parseProgress(text));
+          }
+          records = mergeProgress(arrays, manifest);
+          plan = createPlan(config.plan, manifest, records);
+        } catch (error) { throw error instanceof WorkerError ? error : new WorkerError('PUBLIC_FILE_INVALID'); }
+      }
       completed = plan.completed; total = plan.total;
       await writeState({ total, completed, remaining: plan.remaining });
       const previous = await readPublicJson(config.attemptPath, { optional: true });
@@ -357,6 +482,13 @@ export async function runWorker(config, dependencies, { setup = false, runId = r
       while (!(await stopRequested())) await wait(config.pollIntervalMs);
       await writeState({ phase: 'stopped' });
       return state;
+    }
+    if (dependencies.waitForUnlock) {
+      await dependencies.waitForUnlock(config, browser, {
+        shouldStop: stopRequested,
+        onStage: () => writeState({ phase: 'waiting_unlock' }),
+      });
+      if (await stopRequested()) { await writeState({ phase: 'stopped' }); return state; }
     }
     runner = await dependencies.createRunner({
       localPage: browser.localPage, nadoPage: browser.nadoPage, walletManifest: manifest,
@@ -440,5 +572,6 @@ export async function runWorker(config, dependencies, { setup = false, runId = r
     await writeQueue.catch(() => {});
     await releaseProfile?.();
     await releaseGlobal?.();
+    finishLease?.();
   }
 }

@@ -1,0 +1,18 @@
+{
+  "bounds": { "min": 1, "max": 10000 },
+  "start": 1,
+  "end": 2499,
+  "direction": "asc",
+  "laneCount": 1,
+  "laneIndex": 0,
+  "browser": "edge",
+  "profileName": "registration-edge",
+  "localUrl": "http://127.0.0.1:18270/connect",
+  "walletsPath": "private-data/wallets.json",
+  "progressPath": ".local/registration-progress.ndjson",
+  "progressPaths": [],
+  "usernamePrefix": "ybtl",
+  "timeoutMs": 20000,
+  "pollIntervalMs": 1000,
+  "maxUsernameCandidates": 5
+}

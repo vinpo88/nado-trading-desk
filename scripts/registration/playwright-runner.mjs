@@ -89,12 +89,12 @@ function inspectWebsiteDOM({ waitFor = null } = {}) {
 export function createPlaywrightNadoRunner({
   localPage, nadoPage, walletManifest, usernameForWallet = number => 'ybtl' + number,
   termsConfirmation, signal, onEvent = () => {}, timeoutMs = 20000,
-  maxUsernameCandidates = 5, resumeAttempt,
+  maxUsernameCandidates = 5, resumeAttempt, withUi = operation => operation(),
 }) {
   const manifest = validateWalletManifest(walletManifest);
   const addresses = new Map(manifest.map(wallet => [wallet.walletNumber, wallet.address]));
   if (!localPage?.url || !nadoPage?.url || typeof usernameForWallet !== 'function' || typeof onEvent !== 'function'
-    || !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60000
+    || typeof withUi !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60000
     || !Number.isInteger(maxUsernameCandidates) || maxUsernameCandidates < 1 || maxUsernameCandidates > 20) throw new RegistrationUiError('NEEDS_ATTENTION');
   let localOrigin;
   try {
@@ -124,8 +124,8 @@ export function createPlaywrightNadoRunner({
   const call = async operation => { guard(); const result = await operation(); guard(); return result; };
   // Chromium can throttle animation frames in a background tab. Playwright's
   // actionability checks and DOM event waits need the actual target foregrounded.
-  const localCall = operation => call(async () => { await localPage.bringToFront(); guard(); return operation(); });
-  const nadoCall = operation => call(async () => { await nadoPage.bringToFront(); guard(); return operation(); });
+  const localCall = operation => withUi(() => call(async () => { await localPage.bringToFront(); guard(); return operation(); }));
+  const nadoCall = operation => withUi(() => call(async () => { await nadoPage.bringToFront(); guard(); return operation(); }));
   const button = (page, name) => page.getByRole('button', { name, exact: true });
   const authBox = () => localPage.getByRole('checkbox', { name: '自动确认一次此用户名签名', exact: true });
   const usernameInput = () => localPage.getByLabel('本次官网用户名', { exact: true });
@@ -136,7 +136,7 @@ export function createPlaywrightNadoRunner({
   }
   async function cleanup() {
     if (cleanupPromise) return cleanupPromise;
-    cleanupPromise = (async () => {
+    cleanupPromise = withUi(async () => {
       try {
         if (localPage.isClosed()) return;
         // Only touch the bound local page. Closing it is the fallback that
@@ -151,7 +151,7 @@ export function createPlaywrightNadoRunner({
       } catch {
         try { if (!localPage.isClosed()) await localPage.close({ runBeforeUnload: false }); } catch { /* Worker must close the owning context too. */ }
       }
-    })();
+    });
     try { await cleanupPromise; } finally { cleanupPromise = null; }
   }
   const abortCleanup = () => { void cleanup(); };
@@ -171,7 +171,9 @@ export function createPlaywrightNadoRunner({
     } finally { busy = false; }
   }
   async function localState() {
-    if (!await localCall(() => localPage.getByTestId('connect-wallet-address').isVisible())) fail('VAULT_LOCKED');
+    // Reading whether the vault is locked does not need focus. Repeated polling
+    // must not steal the user's keyboard while another profile is being restored.
+    if (!await call(() => localPage.getByTestId('connect-wallet-address').isVisible())) fail('VAULT_LOCKED');
     const number = await localCall(() => localPage.getByLabel('钱包编号（从 1 开始）', { exact: true }).inputValue());
     const address = (await localCall(() => localPage.getByTestId('connect-wallet-address').innerText())).trim().toLowerCase();
     const status = (await localCall(() => localPage.getByTestId('connect-status').innerText())).trim();
@@ -233,20 +235,27 @@ export function createPlaywrightNadoRunner({
   async function pair(number, address, base) {
     await event('pairing');
     await nadoCall(() => button(nadoPage, 'Sign In').and(nadoPage.locator(':visible')).first().click({ timeout: timeoutMs }));
+    await event('opening_walletconnect');
     await nadoCall(() => button(nadoPage, 'WalletConnect').click({ timeout: timeoutMs }));
+    await event('waiting_pairing_link');
     await nadoCall(() => button(nadoPage, 'Copy link').waitFor({ state: 'visible', timeout: timeoutMs }));
-    await withRegistrationClipboardLock(async () => {
+    await withRegistrationClipboardLock(() => withUi(async () => {
       let uri = '';
       try {
         guard();
+        await event('clearing_pairing_clipboard');
         await nadoCall(() => nadoPage.evaluate(() => navigator.clipboard.writeText('')));
+        await event('copying_pairing_link');
         await nadoCall(() => button(nadoPage, 'Copy link').click({ timeout: timeoutMs }));
+        await event('reading_pairing_link');
         const ready = await nadoCall(() => nadoPage.waitForFunction(async () => (await navigator.clipboard.readText()).startsWith('wc:'), null, { timeout: timeoutMs, polling: 'raf' }));
         await ready.dispose();
         uri = await nadoCall(() => nadoPage.evaluate(() => navigator.clipboard.readText()));
+        await event('validating_pairing_link');
         if (uri.length > 4096) fail('NEEDS_ATTENTION');
         validatePairingUri(uri);
         await assertWallet(number, address);
+        await event('filling_pairing_link');
         await localCall(() => localPage.getByLabel('WalletConnect 连接码', { exact: true }).fill(uri, { timeout: timeoutMs }));
       } catch { throw new RegistrationUiError(signal?.aborted ? 'ABORTED' : 'NEEDS_ATTENTION', 'pairing', number); }
       finally {
@@ -254,7 +263,7 @@ export function createPlaywrightNadoRunner({
         try { await nadoPage.bringToFront(); await nadoPage.evaluate(() => navigator.clipboard.writeText('')); }
         catch { throw new RegistrationUiError('NEEDS_ATTENTION', 'clipboard_cleanup', number); }
       }
-    });
+    }));
     await event('waiting_connection_proposal');
     await localCall(() => button(localPage, '接收官网连接请求').click({ timeout: timeoutMs }));
     await localCall(() => button(localPage, '同意连接此钱包').waitFor({ state: 'visible', timeout: timeoutMs }));

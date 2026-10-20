@@ -2,6 +2,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createPlaywrightNadoRunner, makeUsernameAlternative, usernameBelongsToWallet } from '../playwright-runner.mjs';
+import { createUiCoordinator } from '../ui-coordinator.mjs';
 
 // Real, ephemeral browser; every request is fulfilled by this synthetic fixture.
 // No real profile, vault, wallet, signing operation, clipboard, or remote site is used.
@@ -23,11 +24,25 @@ before(async () => {
 });
 after(async () => { await browser?.close(); });
 
-async function fixture(t, { conflict = false, unknownAfterSave = false, existingAfterTerms = false, startComplete = null, onEvent, resumeAttempt } = {}) {
-  const context = await browser.newContext();
+async function fixture(t, { conflict = false, unknownAfterSave = false, existingAfterTerms = false, startComplete = null, onEvent, resumeAttempt,
+  browserInstance = browser, withUi, sharedClipboard, pairingTag = 'ab' } = {}) {
+  const context = await browserInstance.newContext();
   t.after(() => context.close());
   // In-memory fixture clipboard with focus semantics; never touches OS clipboard.
-  await context.addInitScript(() => {
+  if (sharedClipboard) {
+    await context.exposeBinding('fixtureClipboard', async (_, method, value) => {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      if (method === 'write') sharedClipboard.text = value;
+      else if (method === 'read') return sharedClipboard.text;
+      else assert.fail('Unknown fixture clipboard method');
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        async writeText(value) { if (!document.hasFocus()) throw new Error('Synthetic clipboard not focused'); await window.fixtureClipboard('write', value); },
+        async readText() { if (!document.hasFocus()) throw new Error('Synthetic clipboard not focused'); return window.fixtureClipboard('read'); },
+      } });
+    });
+  } else await context.addInitScript(() => {
     let text = '';
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
       async writeText(value) { if (!document.hasFocus()) throw new Error('Synthetic clipboard not focused'); text = value; },
@@ -35,6 +50,7 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
     } });
   });
   const counters = { saves: 0, terms: 0, proposals: 0, forbidden: 0 };
+  const pairingUri = `wc:${pairingTag.repeat(32)}@2?symKey=${'cd'.repeat(32)}&expiryTimestamp=${Math.floor(Date.now() / 1000) + 600}`;
   let localPage; let nadoPage;
   const address = number => manifest[number - 1].address;
   const profile = (number, username) => `<button onclick="fixtureAction({type:'menu'})"><img alt="Ink" width="18" height="18" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="> ${address(number).slice(0, 6)}…${address(number).slice(-4)}<br>${esc(username)}</button>`;
@@ -69,11 +85,11 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
   await context.exposeBinding('fixtureAction', async (_, action) => {
     if (action.type === 'signin') return renderNado('<button onclick="fixtureAction({type:\'walletconnect\'})">WalletConnect</button>');
     if (action.type === 'walletconnect') {
-      const uri = `wc:${'ab'.repeat(32)}@2?symKey=${'cd'.repeat(32)}&expiryTimestamp=${Math.floor(Date.now() / 1000) + 600}`;
-      return renderNado(`<button onclick="navigator.clipboard.writeText('${uri}')">Copy link</button>`);
+      return renderNado(`<button onclick="navigator.clipboard.writeText('${pairingUri}')">Copy link</button>`);
     }
     const number = Number(await localPage.getByLabel('钱包编号（从 1 开始）').inputValue());
     if (action.type === 'proposal') {
+      assert.equal(await localPage.getByLabel('WalletConnect 连接码').inputValue(), pairingUri);
       counters.proposals++;
       await localPage.locator('#proposal').evaluate((node, currentAddress) => { node.innerHTML = `<section aria-labelledby="proposal-title"><h2 id="proposal-title">确认连接请求</h2><p>已核验的网站来源：https://app.nado.xyz</p><p>钱包：${currentAddress}</p><p>网络：Ink 主网（57073）</p><button onclick="fixtureAction({type:'approve'})">同意连接此钱包</button></section>`; }, address(number));
       return;
@@ -108,7 +124,7 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
   nadoPage = await context.newPage(); await nadoPage.goto(NADO);
   localPage.setDefaultTimeout(2000); nadoPage.setDefaultTimeout(2000);
   await localPage.bringToFront(); // Copier must explicitly focus Nado.
-  const runner = createPlaywrightNadoRunner({ localPage, nadoPage, walletManifest: manifest, timeoutMs: 1500,
+  const runner = createPlaywrightNadoRunner({ localPage, nadoPage, walletManifest: manifest, timeoutMs: sharedClipboard ? 5000 : 1500, withUi,
     onEvent: onEvent ?? (event => { if (process.env.NADO_FIXTURE_DEBUG === '1') console.error(event.stage); }), resumeAttempt });
   return { runner, localPage, nadoPage, counters };
 }
@@ -182,4 +198,23 @@ test('real Playwright fixture: crash recovery requires the exact journal usernam
   const wrong = await fixture(t, { startComplete: 'yb7tl2', resumeAttempt });
   await assert.rejects(() => wrong.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.equal(wrong.counters.saves, 0);
+});
+
+test('Edge and Chrome concurrent fixture: shared clipboard and UI scheduler preserve both wallet identities', async t => {
+  const peerChannel = process.platform === 'win32' ? 'chrome' : undefined;
+  const peerBrowser = await chromium.launch({ headless: true, ...(peerChannel ? { channel: peerChannel } : {}) });
+  t.after(() => peerBrowser.close());
+  const coordinator = createUiCoordinator();
+  const sharedClipboard = { text: '' };
+  const a = await fixture(t, { withUi: coordinator.run, sharedClipboard, pairingTag: 'ab' });
+  const b = await fixture(t, { browserInstance: peerBrowser, withUi: coordinator.run, sharedClipboard, pairingTag: 'ef' });
+  const [first, second] = await Promise.all([
+    a.runner.runWallet(2, confirmation), b.runner.runWallet(3, confirmation),
+  ]);
+  assert.deepEqual([first.walletNumber, second.walletNumber], [2, 3]);
+  assert.deepEqual([first.address, second.address], [manifest[1].address, manifest[2].address]);
+  assert.deepEqual([first.username, second.username], ['ybtl2', 'ybtl3']);
+  assert.equal(sharedClipboard.text, '');
+  assert.deepEqual([a.counters.saves, b.counters.saves, a.counters.forbidden, b.counters.forbidden], [1, 1, 0, 0]);
+  await Promise.all([a.runner.cleanup(), b.runner.cleanup()]);
 });

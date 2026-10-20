@@ -1,0 +1,6 @@
+{
+  "workerConfigs": [
+    "registration.worker.local.json",
+    "registration.worker.chrome.local.json"
+  ]
+}

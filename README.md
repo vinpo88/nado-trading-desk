@@ -114,7 +114,7 @@ WalletConnect 连接码含临时配对材料，不写入日志、Git 或交接�
 
 ## 连续执行：独立 Edge / Chrome 程序
 
-先完成本地安装与保险库备份。Windows 推荐使用已安装的 Edge；可在 `registration.worker.local.json` 中将 `browser` 改为 `chrome`。执行器只创建仓库内 `browser-profiles/registration/` 下的专用配置，不读取或复制日常浏览器的登录资料。
+先完成本地安装与保险库备份。Windows 推荐使用已安装的 Edge；单独换用 Chrome 时，须同时将 `browser` 改为 `chrome`、`profileName` 改为 `registration-chrome`，不能让两种浏览器复用配置目录。执行器只创建仓库内 `browser-profiles/registration/` 下的专用配置，不读取或复制日常浏览器的登录资料。
 
 1. 启动本地 Nado 服务。复制 `registration.worker.example.json` 为 `registration.worker.local.json`，核对范围、方向和历史 `progressPaths`。默认从 **10000 倒序到 1**；钱包少于一万时必须相应调整。旧进度需明确加入配置，不能仅凭当前网页编号判断已完成。
 2. 双击 **`Start-Registration.cmd`**。后台 Node 进程启动专用浏览器，等待你自行恢复加密备份、输入密码解锁并核对钱包。已在这个配置恢复过时只需解锁。不要将密码写进配置；Windows 入口在缺少配置时会复制示例，但不会替你选择历史进度。
@@ -143,9 +143,31 @@ node scripts/registration/worker.mjs accept-terms --config registration.worker.l
 
 只有官网地址、准确用户名、Ink 主网和本地结果全部核验，且成功进度写入后，才处理下一个钱包。保存用户名之前先持久记录操作意图；保存后的结果不明确时停止核对，不盲目再次提交。停止命令等待当前钱包结束；等待解锁或条款确认时可直接结束。异常或退出会关闭专用浏览器，清除尚未使用的页面授权。不要强行结束进程后把未核实项记为成功。
 
-本机同一用户只允许一个执行器，包括准备模式，防止系统剪贴板与钱包连接互相干扰。可在不同设备使用固定计划分片，分别保管保险库和进度；调整分片前先停止并合并记录。当前版本不宣称一万钱包的官网长时间运行已经完成实测，也不宣称 Edge/Chrome 多通道官网并行已验证。
+本机同一用户只允许一个独立执行器或一个并发组，包括准备模式。需要 Edge 与 Chrome 同时执行时，使用下面的并发组入口；不要分别双击两个单浏览器启动入口。当前版本不宣称一万钱包的官网长时间运行已经完成实测。
 
 断电或强制结束后若提示 `WORKER_LOCK_STALE`，先确认旧执行器及其专用浏览器均已关闭，再运行 `node scripts/registration/worker.mjs recover-locks --config registration.worker.local.json --confirm-closed`。命令只处理对应的过期运行锁，拒绝移除仍有存活进程的锁，也不会杀死浏览器；不要删除 `attempt.json` 来绕过保存结果核对。
+
+### Edge 和 Chrome 同时执行
+
+并发组在同一个 Node 进程中管理两个独立浏览器。各自保管保险库、登录会话、进度和保存意图；共用调度器协调窗口焦点。连接码的复制、读取、填入及清空是一段不可交叉的操作，网络和页面处理可分别推进。不要在运行期间手动输入或复制其他内容；并发不保证速度翻倍。
+
+1. 先停止旧执行器，等待当前钱包完成、记录落盘并关闭专用窗口。保留历史记录和所有 `attempt.json`。
+2. 新安装可复制 `registration.worker.edge.example.json` 为 `registration.worker.local.json`，复制 `registration.worker.chrome.example.json` 为 `registration.worker.chrome.local.json`。**已有配置请就地修改，保留历史路径，不能覆盖。** 两个例子分别为 **Edge 1–2499 升序**、**Chrome 2500–10000 升序**；实际范围和方向由操作者明确设置，程序拒绝重叠范围。
+3. 复制 `registration.group.example.json` 为 `registration.group.local.json`。确认同一份 `private-data/wallets.json` 已从本地页面导出，两个配置使用不同的 `profileName` 和 `progressPath`。组启动前合并校验所有成员声明的公开历史，已核验的钱包不会重复处理。
+4. 双击 `Start-Registration-Parallel.cmd`。在两个专用浏览器各自恢复加密备份并自行解锁。程序等待两个浏览器都解锁后开始，等待时不会反复抢夺输入焦点。Chrome 的钱包恢复属于独立配置，不会自动复制 Edge 的浏览器数据。
+5. 逐个核对本次条款候选，使用上一节 `worker.mjs accept-terms` 命令，分别指定 Edge / Chrome 的配置及各自候选摘要。确认文件不能从旧进程或其他操作者复制使用。
+
+`Registration-Parallel-Status.cmd` 查看两边进度；`Stop-Registration-Parallel.cmd` 让两边各自完成当前钱包并保存后停止。跨平台对应：
+
+```sh
+node scripts/registration/group.mjs start --config registration.group.local.json
+node scripts/registration/group.mjs status --config registration.group.local.json
+node scripts/registration/group.mjs stop --config registration.group.local.json
+```
+
+组运行期间不可另起单浏览器执行器。调整范围前停止整个组，重新核对历史；未完成的保存意图必须仍属于对应浏览器的下一个待处理钱包。异常断电后的组锁使用 `group.mjs recover-locks --config registration.group.local.json --confirm-closed`，前提是确认该组所有专用浏览器已经关闭，所有相关进程已退出。
+
+测试包含真实 Edge 与 Chrome 的隔离并发流程：所有网页请求由模拟站点响应，模拟共享剪贴板并核对每个连接码、地址及用户名。这验证了调度和隔离逻辑，不代表真实官网已完成全量注册。
 
 ## 倒序计划与断点续接
 
