@@ -35,6 +35,8 @@ export function openLiveStream(opts: {
   let closed = false;
   let retry = 0;
   let idc = 1;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let subscribeTimer: ReturnType<typeof setTimeout> | undefined;
 
   const connect = (): void => {
     if (closed) return;
@@ -42,12 +44,16 @@ export function openLiveStream(opts: {
     ws.onopen = () => {
       retry = 0;
       opts.onStatus?.("open");
-      // subscribe each PUBLIC_STREAMS type for EACH cohort subaccount, over one WS
-      for (const subaccount of opts.subaccounts) {
-        for (const type of PUBLIC_STREAMS) {
-          try { ws?.send(JSON.stringify({ id: idc++, method: "subscribe", stream: { type, subaccount } })); } catch { /* ignore */ }
-        }
-      }
+      // Hard bound plus paced sends prevents a 10,000-wallet cold-start burst.
+      const subscriptions = [...new Set(opts.subaccounts)].slice(0, 50)
+        .flatMap((subaccount) => PUBLIC_STREAMS.map((type) => ({ type, subaccount })));
+      let cursor = 0;
+      const subscribeNext = (): void => {
+        if (closed || ws?.readyState !== WebSocket.OPEN || cursor >= subscriptions.length) return;
+        try { ws.send(JSON.stringify({ id: idc++, method: "subscribe", stream: subscriptions[cursor++] })); } catch { return; }
+        subscribeTimer = setTimeout(subscribeNext, 100);
+      };
+      subscribeNext();
     };
     ws.onmessage = (ev) => {
       try {
@@ -67,16 +73,17 @@ export function openLiveStream(opts: {
         }
       } catch { /* non-JSON / ping — ignore */ }
     };
-    ws.onclose = () => { opts.onStatus?.("closed"); scheduleReconnect(); };
+    ws.onclose = () => { clearTimeout(subscribeTimer); opts.onStatus?.("closed"); scheduleReconnect(); };
     ws.onerror = () => { opts.onStatus?.("error"); };
   };
 
   const scheduleReconnect = (): void => {
     if (closed) return;
     retry = Math.min(retry + 1, 6);
-    setTimeout(connect, 500 * 2 ** retry); // 1s → ~32s backoff
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 500 * 2 ** retry); // 1s → ~32s backoff
   };
 
   connect();
-  return { close: () => { closed = true; try { ws?.close(); } catch { /* ignore */ } } };
+  return { close: () => { closed = true; clearTimeout(reconnectTimer); clearTimeout(subscribeTimer); try { ws?.close(); } catch { /* ignore */ } } };
 }

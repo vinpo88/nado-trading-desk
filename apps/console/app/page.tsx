@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Empty, LinkButton, Sidebar as KumoSidebar, Text, Tooltip } from "@cloudflare/kumo";
 import { ArrowRightIcon, FunnelIcon, ReceiptIcon, UsersThreeIcon, WalletIcon } from "@phosphor-icons/react";
 import { filterWallets, accountOptions, cohortsOf } from "@farm/ui";
@@ -8,35 +8,72 @@ import type { WalletVM, Fleet } from "@farm/ui";
 import { Sidebar } from "./components/Sidebar";
 import { WalletGrid } from "./components/WalletGrid";
 import { WalletDrawer } from "./components/WalletDrawer";
+import { LocalWalletDrawer } from "./components/LocalWalletDrawer";
 import { CohortFilmstrip } from "./components/CohortFilmstrip";
 import { AccountingView } from "./components/AccountingView";
 import { useNetwork } from "./components/NetworkProvider";
 import { bulk } from "./lib/bulk";
-import { fetchLiveState, reconcileWallet, mergeWallet, liveWalletVMs, isLiveWallet } from "./lib/live";
+import { fetchLiveState, localWalletState, reconcileWallet, mergeWallet, liveWalletVMs, isLiveWallet } from "./lib/live";
 import { readBudget, forceRefreshNative, TREASURY_WALLET_ID } from "./lib/liveContext";
 import { openOrderUpdateStream } from "./lib/orderUpdateStream";
 import type { LiveState } from "./lib/live";
 import { openLiveStream } from "./lib/liveStream";
 import type { LiveEvent } from "./lib/liveStream";
+import { zhLabel } from "./lib/zh";
 
 export default function Page() {
   const { chainId, net } = useNetwork(); // selected network: drives labels + the reconnect-on-switch
   // The fleet is the REAL in-tab cohort only (no mock): the home page shows the unlocked vault's
   // accounts and their wallets, grouped by account in the sidebar filter.
-  const [live, setLive] = useState<LiveState>({ enabled: false });
+  const [live, setLive] = useState<LiveState>(localWalletState);
+  const [connecting, setConnecting] = useState(true);
+  const [drawerWallet, setDrawerWallet] = useState<WalletVM | null>(null);
+  const [visibleWalletIds, setVisibleWalletIds] = useState<string[]>([]);
+  const sweepCursor = useRef(0);
+  const refreshId = useRef(0);
   // Repopulate the live fleet IDENTITIES (keyless config + in-tab cohort; no per-wallet reads).
   // Called on mount and on cohort change (unlock/lock/import); the budget-paced sweep + the
   // WS-targeted reconcile fill in each wallet's reads afterward.
-  const refreshLive = useCallback(() => { fetchLiveState().then(setLive).catch(() => {}); }, []);
-  useEffect(() => { refreshLive(); }, [refreshLive, chainId]); // re-fetch + reconnect on a network switch
+  const refreshLive = useCallback((force = false) => {
+    const requestId = ++refreshId.current;
+    setConnecting(true);
+    // Show the unlocked vault immediately, including while the live API is slow or offline.
+    setLive(localWalletState());
+    fetchLiveState(force).then((next) => {
+      if (requestId === refreshId.current) {
+        // Only a confirmed offline result stops jobs; the provisional local view
+        // while loading config must not interrupt an existing live schedule.
+        if (!next.enabled) bulk.halt();
+        setLive(next);
+        setConnecting(false);
+      }
+    }).catch(() => {
+      if (requestId === refreshId.current) {
+        bulk.halt();
+        setLive({ ...localWalletState(), error: "连接失败，请重试。" });
+        setConnecting(false);
+      }
+    });
+  }, []);
+  useEffect(() => {
+    refreshLive();
+    return () => { refreshId.current++; };
+  }, [refreshLive, chainId]); // re-fetch + reconnect on a network switch
 
   // Browser-side WS: the public `fill` stream for EVERY cohort subaccount (no key) routes a
   // targeted per-wallet reconcile; a budget-paced round-robin sweep keeps the idle bulk fresh
   // within the per-IP read budget. (order_update is auth-gated — a working-set enhancement, W5.)
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
   const [wsOpen, setWsOpen] = useState(false);
-  const subKey = (live.wallets ?? []).map((w) => w.subaccount).filter(Boolean).join(",");
+  // Keep real-time subscriptions bounded even for a 10,000-wallet vault. The
+  // viewed wallet comes first; the existing paced sweep still covers the fleet.
+  const subKey = useMemo(() => {
+    const byId = new Map((live.wallets ?? []).map((wallet) => [wallet.walletId, wallet]));
+    return [...new Set([...(drawerWallet ? [drawerWallet.id] : []), ...visibleWalletIds])]
+      .slice(0, 50).map((id) => byId.get(id)?.subaccount).filter(Boolean).join(",");
+  }, [live.wallets, visibleWalletIds, drawerWallet?.id]);
   useEffect(() => {
+    setWsOpen(false);
     if (!live.enabled || !live.wsSubscribeUrl || !subKey) return;
     // subaccount → walletId: a public fill/position_change names its subaccount, so it
     // reconciles ONLY that wallet. This replaces the old "any WS event re-reads the WHOLE
@@ -60,7 +97,7 @@ export default function Page() {
     };
     const stream = openLiveStream({
       url: live.wsSubscribeUrl, subaccounts: subKey.split(","),
-      onStatus: (s) => setWsOpen(s === "open"),
+      onStatus: (s) => { if (!stopped) setWsOpen(s === "open"); },
       onEvent: (e) => {
         setLiveEvents((xs) => [e, ...xs].slice(0, 20));
         const walletId = e.subaccount ? subToWallet.get(e.subaccount.toLowerCase()) : undefined;
@@ -80,14 +117,13 @@ export default function Page() {
     // it can't starve interactive ops (a kill-switch cancel-all, a drawer read).
     const SWEEP_RESERVE = 3; // leave this many of the 6 burst tokens for interactive/write ops
     const cohort = live.wallets ?? [];
-    let cursor = 0;
     const nap = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
     void (async () => {
       while (!stopped) {
         if (cohort.length === 0) { await nap(1000); continue; }
         if (readBudget() <= SWEEP_RESERVE) { await nap(400); continue; } // yield headroom to interactive ops
-        const w = cohort[cursor % cohort.length]!;
-        cursor++;
+        const w = cohort[sweepCursor.current % cohort.length]!;
+        sweepCursor.current++;
         try {
           const upd = await reconcileWallet(w.walletId); // blocks on the RateLimiter inside readWalletLive
           if (!stopped) setLive((s) => mergeWallet(s, upd));
@@ -109,18 +145,26 @@ export default function Page() {
 
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(() => new Set());
   const [selectedCohorts, setSelectedCohorts] = useState<Set<string>>(new Set());
-  const [drawerWallet, setDrawerWallet] = useState<WalletVM | null>(null);
   const [accountingOpen, setAccountingOpen] = useState(false);
+
+  const cohortKey = fleet.cohorts.join(",");
+  useEffect(() => {
+    setSelectedCohorts((selected) => {
+      const available = new Set(fleet.cohorts);
+      const next = new Set([...selected].filter((c) => available.has(c)));
+      return next.size === selected.size ? selected : next;
+    });
+  }, [cohortKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Viewed-wallet priority: reconcile the OPENED live wallet immediately so the drawer shows
   // fresh state without waiting for the round-robin sweep to walk around to it.
   const drawerId = drawerWallet?.id;
   useEffect(() => {
-    if (!drawerId || !isLiveWallet({ id: drawerId })) return;
+    if (!live.enabled || !drawerId || !isLiveWallet({ id: drawerId })) return;
     let cancelled = false;
     reconcileWallet(drawerId).then((upd) => { if (!cancelled) setLive((s) => mergeWallet(s, upd)); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [drawerId]);
+  }, [drawerId, live.enabled, chainId]);
 
   // Render the drawer from the CURRENT version of the opened wallet (re-derived from the live
   // fleet), so a reconcile / sweep / WS update reaches the open drawer's tiles — not just the
@@ -144,7 +188,7 @@ export default function Page() {
   // we coalesce a targeted reconcile so the drawer reflects it. The budget-paced sweep stays the
   // backstop (incl. if auth is rejected). subKey is a dep so a lock/unlock/re-import re-runs this.
   useEffect(() => {
-    if (!drawerId || !isLiveWallet({ id: drawerId }) || !live.wsSubscribeUrl || !live.chainId || !live.endpoint) return;
+    if (!live.enabled || !drawerId || !isLiveWallet({ id: drawerId }) || !live.wsSubscribeUrl || !live.chainId || !live.endpoint) return;
     const sub = (live.wallets ?? []).find((x) => x.walletId === drawerId)?.subaccount;
     if (!sub) return;
     let t: ReturnType<typeof setTimeout> | null = null;
@@ -157,7 +201,7 @@ export default function Page() {
       },
     });
     return () => { stopped = true; if (t) clearTimeout(t); stream.close(); };
-  }, [drawerId, subKey, live.wsSubscribeUrl, live.chainId, live.endpoint]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [drawerId, subKey, live.enabled, live.wsSubscribeUrl, live.chainId, live.endpoint]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Default every real account to checked as it appears (so new accounts show up without the user
   // re-checking); only ADD, so a user's explicit un-check of an existing account is preserved.
@@ -191,7 +235,7 @@ export default function Page() {
       className="h-dvh overflow-hidden bg-kumo-canvas text-kumo-default"
     >
       <Sidebar
-        workspaceName={live.enabled ? net.networkName : "offline"}
+        workspaceName={live.enabled ? zhLabel(net.networkName) : "离线"}
         totalWallets={fleet.wallets.length}
         shownWallets={shown.length}
         shown={shown}
@@ -203,6 +247,10 @@ export default function Page() {
         onToggleCohort={toggleCohort}
         liveMarkets={live.markets}
         liveEnabled={live.enabled}
+        onlineAvailable={live.onlineAvailable}
+        connecting={connecting}
+        connectionError={live.error}
+        onRetryConnection={() => refreshLive(true)}
         liveDefaultProduct={live.defaultProduct}
         liveCohortSize={live.wallets?.length || 3}
         onLiveCohortChange={refreshLive}
@@ -219,32 +267,32 @@ export default function Page() {
         }}
       />
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-4 border-b border-kumo-line bg-kumo-base px-4 py-3">
-          {/* The title + status pill never shrink; the "N shown" hint on the right is the part that yields
-              (truncates) when the header runs out of room, so the heading never wraps. */}
-          <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-            <Text variant="heading" as="h1">All wallets</Text>
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-kumo-line bg-kumo-base px-4 py-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Text variant="heading" as="h1">所有钱包</Text>
+            {!live.enabled && <Badge variant="secondary">{connecting ? "正在连接…" : "离线 · 本地钱包"}</Badge>}
             {live.enabled && (
               // The network-accent status pill: no Kumo Badge variant fills with the brand, so it's a Badge
               // whose fill is overridden (Kumo cn) with the re-pointed brand token. Badge drops `title`, so
               // the detail moves to a Kumo Tooltip. The status string stays ONE text run (e2e contract).
-              <Tooltip side="bottom" content={live.error ?? (live.locked ? `Unlock the in-tab cohort to go live on ${net.networkName}` : `${liveWallets.length} independent EOA wallet(s) live on ${net.networkName}`)}>
+              <Tooltip side="bottom" content={live.locked ? "请先创建或导入钱包" : `${liveWallets.length} 个钱包已连接${zhLabel(net.networkName)}；余额按限速逐步查询`}>
                 <Badge variant="primary" className="bg-kumo-brand text-kumo-inverse">
                   <span aria-hidden className="size-1.5 animate-pulse rounded-full bg-kumo-inverse" />
                   {live.locked
-                    ? `LIVE ${net.networkName} · locked`
-                    : `LIVE ${net.networkName} · ${liveWallets.length} EOAs${wsOpen ? " · WS live" : ""}${liveEvents.length > 0 ? ` · ${liveEvents.length} events` : ""}`}
+                    ? `在线 ${zhLabel(net.networkName)} · 暂无钱包`
+                    : `在线 ${zhLabel(net.networkName)} · ${liveWallets.length} 个钱包${wsOpen ? " · 推送已连接" : ""}${liveEvents.length > 0 ? ` · ${liveEvents.length} 条事件` : ""}`}
                 </Badge>
               </Tooltip>
             )}
           </div>
           <div className="flex min-w-0 items-center gap-3">
             <span className="flex min-w-0 items-center gap-1 text-kumo-subtle">
-              <span className="truncate">{shown.length} shown · scroll horizontally</span>
+              <span className="truncate">显示 {shown.length} 个 · 可横向滚动</span>
               <ArrowRightIcon className="shrink-0" />
             </span>
-            <LinkButton href="/accounts" variant="secondary" icon={UsersThreeIcon} className="shrink-0">Accounts</LinkButton>
-            <Button icon={ReceiptIcon} className="shrink-0" onClick={() => setAccountingOpen(true)}>Accounting</Button>
+            <LinkButton href="/accounts" variant="secondary" icon={UsersThreeIcon} className="shrink-0">账户</LinkButton>
+            <LinkButton href="/connect" variant="secondary" className="shrink-0">连接 Nado 官网</LinkButton>
+            {live.enabled && <Button icon={ReceiptIcon} className="shrink-0" onClick={() => setAccountingOpen(true)}>交易记录</Button>}
           </div>
         </header>
         <CohortFilmstrip wallets={shown} selectedId={drawerWallet?.id} onSelect={setDrawerWallet} />
@@ -253,21 +301,21 @@ export default function Page() {
             <div className="flex h-full items-center justify-center p-4">
               <Empty
                 icon={<WalletIcon size={48} className="text-kumo-inactive" />}
-                title="No wallets yet"
-                description="Create an account to derive or import wallets."
-                contents={<LinkButton href="/accounts" variant="primary">Create an account</LinkButton>}
+                title="暂无钱包"
+                description="创建账户以派生或导入钱包。"
+                contents={<LinkButton href="/accounts" variant="primary">创建账户</LinkButton>}
               />
             </div>
           ) : shown.length === 0 ? (
             <div className="flex h-full items-center justify-center p-4">
-              <Empty size="sm" icon={<FunnelIcon size={32} className="text-kumo-inactive" />} title="No wallets match the filter" />
+              <Empty size="sm" icon={<FunnelIcon size={32} className="text-kumo-inactive" />} title="没有符合筛选条件的钱包" />
             </div>
           ) : (
-            <WalletGrid wallets={shown} selectedId={drawerWallet?.id} onSelect={setDrawerWallet} />
+            <WalletGrid wallets={shown} selectedId={drawerWallet?.id} onSelect={setDrawerWallet} offline={!live.enabled} onVisibleWalletsChange={setVisibleWalletIds} />
           )}
         </div>
       </main>
-      <WalletDrawer
+      {live.enabled ? <WalletDrawer
         wallet={drawerVM}
         onClose={() => setDrawerWallet(null)}
         isLive={drawerWallet ? isLiveWallet(drawerWallet) : false}
@@ -287,8 +335,8 @@ export default function Page() {
               .catch(() => {});
           }
         }}
-      />
-      <AccountingView open={accountingOpen} records={bulk.activity} onClose={() => setAccountingOpen(false)} />
+      /> : <LocalWalletDrawer wallet={drawerVM} onClose={() => setDrawerWallet(null)} />}
+      {live.enabled && <AccountingView open={accountingOpen} records={bulk.activity} onClose={() => setAccountingOpen(false)} />}
     </KumoSidebar.Provider>
   );
 }

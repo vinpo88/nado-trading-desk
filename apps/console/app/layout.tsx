@@ -5,8 +5,8 @@ import { AppGate } from "./components/AppGate";
 import { networkForRequest } from "./lib/chainEnv";
 
 export const metadata = {
-  title: "Nado Trading Desk",
-  description: "Generic multi-protocol, multi-wallet automation framework — console shell.",
+  title: "Nado 交易台",
+  description: "在本地安全管理多账户与多钱包，连接测试网或主网查看并操作。",
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
@@ -15,7 +15,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // which keeps it in sync on a live switch, only mounts after the vault unlocks, so SSR seeds it.
   const net = networkForRequest({ headers: await headers() });
   return (
-    <html lang="en" data-net={net.networkName}>
+    <html lang="zh-CN" data-net={net.networkName}>
       {/* text-base = Kumo's 14px content size; without it every unsized element inherits the browser's 16px. */}
       <body className="bg-kumo-canvas text-base text-kumo-default">
         {/* `isolate` on the app root (NOT <body>) is Kumo's documented portal-stacking fix: portaled

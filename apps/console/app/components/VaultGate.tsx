@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Banner, Button, Input, LayerCard, LayerDialog, Loader, Text } from "@cloudflare/kumo";
+import { Banner, Input, LayerCard, LayerDialog, Loader, Text } from "@cloudflare/kumo";
 import { WarningIcon } from "@phosphor-icons/react";
 import { createVault, unlockVault, resetVault } from "../lib/custody";
 import type { VaultStatus } from "../lib/custody";
+import { VaultBackupPanel } from "./VaultBackupPanel";
+import { ChineseButton as Button } from "./ChineseButton";
 
 /** The app entry gate (Waffet-style, status-driven): render EXACTLY ONE of loading / onboarding
  *  (no vault → set a password) / unlock (locked vault → enter the password) — nothing else, no
@@ -19,42 +21,45 @@ export function VaultGate({ status, onReady }: { status: VaultStatus | "loading"
   const [err, setErr] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
 
   const onboarding = status === "absent";
 
   const submit = async () => {
+    if (busy || restoreBusy) return;
     setErr(null);
-    if (pw.length < 8) { setErr("Password must be at least 8 characters."); return; }
-    if (onboarding && pw !== confirm) { setErr("Passwords don't match."); return; }
+    if (pw.length < 8) { setErr("密码至少需要 8 个字符。"); return; }
+    if (onboarding && pw !== confirm) { setErr("两次输入的密码不一致。"); return; }
     setBusy(true);
     try {
       if (onboarding) await createVault(pw); else await unlockVault(pw);
       onReady();
-    } catch (e) {
-      // A locked-vault open failure is almost always a wrong password; onboarding surfaces the real error.
-      setErr(onboarding ? (e as Error).message : "Wrong password.");
+    } catch {
+      setErr(onboarding ? "创建保险库失败，请重试。" : "密码错误，无法解锁保险库。");
       setBusy(false);
     }
   };
 
   return (
-    <div className="flex h-dvh items-center justify-center px-4">
-      <LayerCard className="flex w-full max-w-sm flex-col gap-4 p-5">
-        <Text variant="heading" as="h1">Nado Trading Desk{status === "loading" ? "" : onboarding ? " · create your vault" : " · unlock"}</Text>
+    <div className="flex h-dvh justify-center overflow-y-auto px-4">
+      <div className="my-auto flex w-full max-w-xl flex-col gap-4 py-6">
+      <LayerCard className="flex w-full flex-col gap-4 p-5">
+        <Text variant="heading" as="h1">Nado 交易台{status === "loading" ? "" : onboarding ? " · 创建保险库" : " · 解锁"}</Text>
         {status === "loading" ? (
-          <div className="flex justify-center py-6"><Loader /></div>
+          <div className="flex justify-center py-6"><Loader aria-label="正在加载" /></div>
         ) : (
           <>
-            <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+            <form onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+              <fieldset className="flex flex-col gap-3" disabled={busy || restoreBusy}>
               <Text variant="secondary">
                 {onboarding
-                  ? "Set a password to encrypt your in-browser wallet vault. It never leaves this browser, and there's no recovery if you lose it."
-                  : "Enter your vault password to unlock your accounts and wallets."}
+                  ? "设置密码以加密保存在此浏览器中的钱包保险库。密码不会离开此浏览器，遗失后无法找回，请妥善保存。"
+                  : "输入保险库密码，解锁账户和钱包。"}
               </Text>
               <Input
                 type="password"
-                label="Vault password"
-                placeholder="vault password"
+                label="保险库密码"
+                placeholder="输入保险库密码"
                 autoComplete={onboarding ? "new-password" : "current-password"}
                 autoFocus
                 value={pw}
@@ -63,8 +68,8 @@ export function VaultGate({ status, onReady }: { status: VaultStatus | "loading"
               {onboarding && (
                 <Input
                   type="password"
-                  label="Confirm vault password"
-                  placeholder="confirm vault password"
+                  label="确认保险库密码"
+                  placeholder="再次输入保险库密码"
                   autoComplete="new-password"
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
@@ -72,8 +77,9 @@ export function VaultGate({ status, onReady }: { status: VaultStatus | "loading"
               )}
               {err && <Text variant="error">{err}</Text>}
               <Button type="submit" variant="primary" loading={busy} disabled={busy || !pw || (onboarding && !confirm)}>
-                {onboarding ? "Create vault" : "Unlock"}
+                {onboarding ? "创建保险库" : "解锁"}
               </Button>
+              </fieldset>
             </form>
 
             {!onboarding && (
@@ -81,30 +87,37 @@ export function VaultGate({ status, onReady }: { status: VaultStatus | "loading"
                 variant="error"
                 size="sm"
                 icon={<WarningIcon weight="fill" />}
-                title="Forgot your password?"
-                description="There's no recovery — you can erase this vault and start over."
-                action={<Banner.Action onClick={() => setConfirmReset(true)}>Reset vault</Banner.Action>}
+                title="忘记密码？"
+                description="密码无法找回。你可以清除此浏览器的保险库，然后使用备份和原密码恢复，或重新创建。"
+                action={<Banner.Action onClick={() => setConfirmReset(true)}>重置保险库</Banner.Action>}
               />
             )}
           </>
         )}
       </LayerCard>
+      {onboarding && (
+        <fieldset disabled={busy} className="contents">
+          <VaultBackupPanel mode="restore" onRestored={onReady} onBusyChange={setRestoreBusy} />
+        </fieldset>
+      )}
+      </div>
 
       <LayerDialog.Alert open={confirmReset} onOpenChange={setConfirmReset}>
         <LayerDialog.Content size="sm">
-          <LayerDialog.Title>Erase this vault?</LayerDialog.Title>
+          <LayerDialog.Title>清除此保险库？</LayerDialog.Title>
           <LayerDialog.Body>
             <Text variant="secondary">
-              This permanently erases the local vault and every wallet and key in it. PK wallets can be re-imported from keys you hold elsewhere; HD wallets are lost unless you saved the mnemonic.
+              此操作会永久删除本地保险库及其中的钱包和密钥。只有持有加密备份及原密码、原始私钥或助记词，才能恢复对应钱包。请确认已保存可用备份。
             </Text>
           </LayerDialog.Body>
-          <LayerDialog.Actions>
+          <LayerDialog.Actions dismissLabel="取消">
             <LayerDialog.Actions.Primary
               variant="destructive"
-              loading={resetting}
+              disabled={resetting}
+              aria-busy={resetting || undefined}
               onClick={async () => { setResetting(true); await resetVault(); window.location.reload(); }}
             >
-              Erase &amp; start over
+              <span className="inline-flex items-center gap-1.5">{resetting && <Loader size={14} aria-label="正在加载" />}清除并重新开始</span>
             </LayerDialog.Actions.Primary>
           </LayerDialog.Actions>
         </LayerDialog.Content>

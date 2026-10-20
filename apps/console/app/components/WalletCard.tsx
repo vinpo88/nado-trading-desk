@@ -6,12 +6,13 @@ import { Badge, LayerCard, cn } from "@cloudflare/kumo";
 import type { BadgeVariant } from "@cloudflare/kumo";
 import type { WalletVM, WalletStatus } from "@farm/ui";
 import { AccountKindBadge } from "./AccountKindBadge";
+import { zhLabel } from "../lib/zh";
 
 const STATUS: Record<WalletStatus, [BadgeVariant, string]> = {
-  active: ["success", "Active"],
-  idle: ["secondary", "Idle"],
-  paused: ["warning", "Paused"],
-  error: ["error", "Error"],
+  active: ["success", "在线"],
+  idle: ["secondary", "空闲"],
+  paused: ["warning", "已暂停"],
+  error: ["error", "异常"],
 };
 
 const short = (v: string): string => `${v.slice(0, 6)}…${v.slice(-4)}`;
@@ -22,7 +23,7 @@ const CARD_STYLE: CSSProperties = { contentVisibility: "auto", containIntrinsicS
 // the grid is column-virtualized, so the waste was every MOUNTED stable (mock) card re-rendering
 // on each live setLive tick (the sweep reconciles ~2/s). A card now re-renders only when its
 // wallet VM, selected, or onSelect changes.
-export const WalletCard = memo(function WalletCard({ wallet, selected, onSelect }: { wallet: WalletVM; selected: boolean; onSelect: (w: WalletVM) => void }) {
+export const WalletCard = memo(function WalletCard({ wallet, selected, onSelect, offline = false }: { wallet: WalletVM; selected: boolean; onSelect: (w: WalletVM) => void; offline?: boolean }) {
   const [statusVariant, statusLabel] = STATUS[wallet.status];
   // A Kumo LayerCard rendered AS the button (useRender + mergeProps keep the testid, handler and
   // content-visibility style). Kumo idioms: hover = bg-kumo-tint (instant), keyboard focus + selection
@@ -38,21 +39,27 @@ export const WalletCard = memo(function WalletCard({ wallet, selected, onSelect 
     >
       <div className="flex items-center justify-between gap-2">
         <AccountKindBadge kind={wallet.accountKind}>{wallet.accountName}</AccountKindBadge>
-        <Badge variant={statusVariant}>{statusLabel}</Badge>
+        <Badge variant={offline ? "secondary" : statusVariant}>{offline ? "本地" : statusLabel}</Badge>
       </div>
       <div className="font-mono text-sm text-kumo-subtle">#{wallet.index} · {short(wallet.address.value)}</div>
-      <div className="mt-auto flex items-end justify-between">
+      {offline ? (
+        <div className="mt-auto flex flex-col text-xs leading-4 text-kumo-subtle">
+          <div>余额未查询</div>
+          <div>订单未查询</div>
+          <div>就绪状态未查询</div>
+        </div>
+      ) : <div className="mt-auto flex items-end justify-between">
         <div>
           <div className="font-semibold tabular-nums">{wallet.quoteBalance} <span className="font-normal text-kumo-subtle">USDT0</span></div>
           <div className="text-sm tabular-nums text-kumo-subtle">{wallet.nativeBalance} ETH</div>
         </div>
         <div className="text-right text-sm text-kumo-subtle">
-          <div className="tabular-nums">{wallet.openOrders} orders</div>
-          <div className="capitalize">{wallet.readiness}</div>
+          <div className="tabular-nums">{wallet.openOrders} 笔订单</div>
+          <div>{zhLabel(wallet.readiness)}</div>
         </div>
-      </div>
+      </div>}
       <div className="flex flex-wrap gap-1">
-        {wallet.cohorts.map((c) => <Badge key={c} variant="secondary">{c}</Badge>)}
+        {wallet.cohorts.filter((c) => !offline || c !== "LIVE").map((c) => <Badge key={c} variant="secondary">{zhLabel(c)}</Badge>)}
       </div>
     </LayerCard>
   );

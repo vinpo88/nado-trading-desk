@@ -1,4 +1,9 @@
 const isDev = process.env.NODE_ENV !== 'production';
+// A separate output directory lets verification builds leave a running server intact.
+const distDir = process.env.NADO_BUILD_DIR || '.next';
+if (!/^\.next(?:-[a-z0-9-]+)?$/.test(distDir)) {
+  throw new Error('NADO_BUILD_DIR must be .next or .next- followed by lowercase letters, digits or hyphens');
+}
 
 // Content-Security-Policy (Q11). The console is operator-attended, not public; this
 // locks the default surface while allowing what the app actually needs: inline
@@ -29,6 +34,7 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  distDir,
   // The workspace packages are consumed as TypeScript source, so Next must transpile them.
   transpilePackages: ['@farm/ui', '@farm/core', '@farm/adapter-api', '@farm/adapter-nado'],
   // The live server route (app/api/nado/*) unlocks a wative workspace and drives the

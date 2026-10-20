@@ -37,17 +37,17 @@ function RollupTable({ title, rows, keyLabel }: { title: string; rows: Rollup[];
             <Table.Header variant="compact" sticky>
               <Table.Row>
                 <Table.Head>{keyLabel}</Table.Head>
-                <Table.Head>Orders</Table.Head>
-                <Table.Head>Volume</Table.Head>
-                <Table.Head>Buys</Table.Head>
-                <Table.Head>Sells</Table.Head>
-                <Table.Head>Fees</Table.Head>
+                <Table.Head>订单数</Table.Head>
+                <Table.Head>成交额</Table.Head>
+                <Table.Head>买入</Table.Head>
+                <Table.Head>卖出</Table.Head>
+                <Table.Head>手续费</Table.Head>
               </Table.Row>
             </Table.Header>
             <Table.Body>
               {rows.slice(0, 50).map((r) => (
                 <Table.Row key={r.key}>
-                  <Table.Cell className="font-mono">{r.key}</Table.Cell>
+                  <Table.Cell className="font-mono">{r.key === "LIVE" ? "联网" : r.key === "LOCAL" ? "本地" : r.key}</Table.Cell>
                   <Table.Cell>{r.orders}</Table.Cell>
                   <Table.Cell>{r.volume.toFixed(2)}</Table.Cell>
                   <Table.Cell>{r.buys}</Table.Cell>
@@ -60,7 +60,7 @@ function RollupTable({ title, rows, keyLabel }: { title: string; rows: Rollup[];
         </div>
         {rows.length > 50 && (
           <div className="px-3 py-2 text-center">
-            <Text variant="secondary" size="xs">+{rows.length - 50} more (included in export)</Text>
+            <Text variant="secondary" size="xs">另有 {rows.length - 50} 条记录（导出文件包含全部记录）</Text>
           </div>
         )}
       </LayerCard>
@@ -78,34 +78,34 @@ export function AccountingView({ open, records, onClose }: { open: boolean; reco
   return (
     <LayerDialog.Root open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       <LayerDialog.Content size="lg">
-        <LayerDialog.Title>Accounting</LayerDialog.Title>
-        <LayerDialog.Description>{records.length} orders</LayerDialog.Description>
+        <LayerDialog.Title>交易账目</LayerDialog.Title>
+        <LayerDialog.Description>{records.length} 笔订单</LayerDialog.Description>
         <LayerDialog.Body>
           {report && t && (
             // pt-1: Body is a scroll container with no top padding, which clipped the stat cards' ring.
             <div className="flex flex-col gap-4 pt-1">
               <Grid variant="4up" gap="sm">
-                <Stat label="Orders" value={String(t.orders)} />
-                <Stat label="Volume" value={t.volume.toFixed(2)} />
-                <Stat label="Buy / sell" value={`${t.buys} / ${t.sells}`} />
-                <Stat label="Fees" value={t.fees.toFixed(4)} />
+                <Stat label="订单数" value={String(t.orders)} />
+                <Stat label="成交额" value={t.volume.toFixed(2)} />
+                <Stat label="买入 / 卖出" value={`${t.buys} / ${t.sells}`} />
+                <Stat label="手续费" value={t.fees.toFixed(4)} />
               </Grid>
               {records.length === 0 ? (
                 <Empty
                   size="sm"
                   icon={<ReceiptIcon size={32} className="text-kumo-inactive" />}
-                  title="No activity yet"
-                  description="Run a bulk action to populate the ledger."
+                  title="暂无交易记录"
+                  description="执行批量操作后，相关记录会显示在这里。"
                 />
               ) : (
                 <>
-                  <RollupTable title="By cohort" rows={report.byCohort} keyLabel="Cohort" />
-                  <RollupTable title="By wallet" rows={report.byWallet} keyLabel="Wallet" />
+                  <RollupTable title="按分组汇总" rows={report.byCohort} keyLabel="分组" />
+                  <RollupTable title="按钱包汇总" rows={report.byWallet} keyLabel="钱包" />
                 </>
               )}
               <div className="flex gap-2">
-                <Button icon={DownloadSimpleIcon} onClick={() => download("fleet-accounting.csv", toCsv(report), "text/csv")} disabled={records.length === 0}>Export CSV</Button>
-                <Button icon={DownloadSimpleIcon} onClick={() => download("fleet-accounting.json", toJson(report), "application/json")} disabled={records.length === 0}>Export JSON</Button>
+                <Button icon={DownloadSimpleIcon} onClick={() => download("fleet-accounting.csv", toCsv(report), "text/csv")} disabled={records.length === 0}>导出 CSV</Button>
+                <Button icon={DownloadSimpleIcon} onClick={() => download("fleet-accounting.json", toJson(report), "application/json")} disabled={records.length === 0}>导出 JSON</Button>
               </div>
             </div>
           )}

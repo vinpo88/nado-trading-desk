@@ -15,6 +15,7 @@ import { cohortWallets, listAccounts } from "./custody";
 import { readWalletLive } from "./liveContext";
 
 export const LIVE_COHORT = "LIVE";
+export const LOCAL_COHORT = "LOCAL";
 export type { LiveProductVM };
 
 // Each live wallet carries its OWNING account identity (slug/name/kind), so the home page groups
@@ -31,6 +32,7 @@ export interface LiveWallet {
 const GAS_FLOOR_ETH = 0.00003;
 export interface LiveState {
   enabled: boolean;
+  onlineAvailable?: boolean;
   chainId?: number;
   endpoint?: string;           // Nado Endpoint addr — the StreamAuthentication verifyingContract
   wsSubscribeUrl?: string;
@@ -46,28 +48,43 @@ export interface LiveState {
 const liveIds = new Set<string>();
 export function isLiveWallet(w: { id: string }): boolean { return liveIds.has(w.id); }
 
+/** Local wallet identities are available independently of the Nado connection. */
+export function localWalletState(): LiveState {
+  const coh = cohortWallets();
+  return {
+    enabled: false,
+    wallets: coh.map((c) => ({
+      walletId: c.walletId, address: c.address, subaccount: c.subaccountHex,
+      accountSlug: c.accountSlug, accountName: c.accountName, accountKind: c.accountKind,
+    })),
+    accounts: listAccounts().map((a) => ({ id: a.slug, name: a.name, kind: a.kind, walletCount: a.walletCount })),
+    locked: coh.length === 0,
+  };
+}
+
+let refreshId = 0;
+
 /** Build the live fleet state CLIENT-SIDE from the keyless public config + the in-tab cohort
  *  IDENTITIES only — NO per-wallet reads here. A read-all on mount/unlock was an O(N) burst
  *  (2N limiter acquires) that backlogged at scale (the one remaining O(N) cold-start). The
  *  budget-paced sweep + the WS-targeted reconcile fill in each wallet's reads lazily instead
  *  (first-screen wallets first — the sweep walks the cohort in order). Empty cohort (locked) →
  *  no live cards, correct for in-browser custody (nothing is live until the operator unlocks). */
-export async function fetchLiveState(): Promise<LiveState> {
-  const cfg = await getLiveConfig();
-  if (!cfg.enabled) { liveIds.clear(); return { enabled: false, error: cfg.error }; }
-  const coh = cohortWallets(); // in-tab; empty until unlocked
+export async function fetchLiveState(force = false): Promise<LiveState> {
+  const requestId = ++refreshId;
+  const cfg = await getLiveConfig(force);
+  const local = localWalletState();
+  if (requestId !== refreshId) return local;
   liveIds.clear();
-  for (const c of coh) liveIds.add(c.walletId);
-  const wallets: LiveWallet[] = coh.map((c) => ({
-    walletId: c.walletId, address: c.address, subaccount: c.subaccountHex,
-    accountSlug: c.accountSlug, accountName: c.accountName, accountKind: c.accountKind,
-  }));
-  // The real vault accounts drive the home sidebar's Account filter (one entry per account).
-  const accounts: AccountVM[] = listAccounts().map((a) => ({ id: a.slug, name: a.name, kind: a.kind, walletCount: a.walletCount }));
+  // An unavailable live API must not hide local custody or enable trading controls.
+  if (!cfg.enabled || cfg.error || !cfg.chainId || !cfg.endpoint || !cfg.wsSubscribeUrl) {
+    return { ...local, onlineAvailable: cfg.enabled, error: cfg.error };
+  }
+  for (const w of local.wallets ?? []) liveIds.add(w.walletId);
   return {
-    enabled: true, chainId: cfg.chainId, endpoint: cfg.endpoint, wsSubscribeUrl: cfg.wsSubscribeUrl,
-    defaultProduct: cfg.defaultProduct, markets: cfg.markets, wallets, accounts,
-    locked: coh.length === 0, error: cfg.error,
+    ...local,
+    enabled: true, onlineAvailable: true, chainId: cfg.chainId, endpoint: cfg.endpoint, wsSubscribeUrl: cfg.wsSubscribeUrl,
+    defaultProduct: cfg.defaultProduct, markets: cfg.markets,
   };
 }
 
@@ -94,7 +111,7 @@ export function mergeWallet(state: LiveState, upd: { walletId: string; openOrder
 
 /** One briefing card per INDEPENDENT live EOA, from the in-tab cohort. */
 export function liveWalletVMs(state: LiveState): WalletVM[] {
-  if (!state.enabled || !state.wallets) return [];
+  if (!state.wallets) return [];
   return state.wallets.map((w, i) => {
     const quote = w.balances?.find((b) => b.scope === "margin");
     const address: Address = { family: "evm", value: w.address as `0x${string}` };
@@ -107,9 +124,9 @@ export function liveWalletVMs(state: LiveState): WalletVM[] {
     });
     return {
       id: w.walletId, accountId: w.accountSlug, accountName: w.accountName, accountKind: w.accountKind,
-      index: i, address, cohorts: [LIVE_COHORT],
+      index: i, address, cohorts: [state.enabled ? LIVE_COHORT : LOCAL_COHORT],
       nativeBalance: w.native ?? "—", quoteBalance: quote?.total ?? "—",
-      status: "active", readiness, openOrders: w.openOrders?.length ?? 0,
+      status: state.enabled ? "active" : "idle", readiness, openOrders: w.openOrders?.length ?? 0,
     };
   });
 }

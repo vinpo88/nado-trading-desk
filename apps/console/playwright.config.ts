@@ -3,22 +3,15 @@
 // gate for the live WS subscribe -> route -> per-wallet reconcile -> UI path (the scaling
 // epic's read-decoupling), which was previously only statically audited.
 //
-// Toolchain adoption (per the global Playwright toolchain rule): this reuses the ONE shared
-// pinned browser store (Chromium 1228, @playwright/test 1.61.1 EXACT) instead of a per-repo
-// download — we point PLAYWRIGHT_BROWSERS_PATH at the shared store (derived from os.homedir()
-// at runtime, never a hardcoded local path) and never run `playwright install`.
+// Playwright uses its standard browser cache unless the developer explicitly sets
+// PLAYWRIGHT_BROWSERS_PATH. No workstation-specific toolchain directory is assumed.
 //
 // Determinism: LAUNCH mode (ephemeral context per test) so the in-tab custody IndexedDB
 // ('nado-ika-custody') starts clean every test — no shared-profile leak. The sequencer is
 // fully mocked at the browser edge (page.route for /state + /relay, page.routeWebSocket for
 // the public stream), so the run needs no real testnet and no funded cohort.
 // =============================================================================
-import os from "node:os";
-import path from "node:path";
 import { defineConfig, devices } from "@playwright/test";
-
-// Reuse the shared global Playwright browser store — no per-repo Chromium.
-process.env.PLAYWRIGHT_BROWSERS_PATH ||= path.join(os.homedir(), ".claude", "toolchains", "Playwright", "browsers");
 
 const PORT = process.env.PORT ?? "18270";
 const BASE = process.env.PW_BASE_URL ?? `http://127.0.0.1:${PORT}`;

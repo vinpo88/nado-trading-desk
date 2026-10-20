@@ -1,9 +1,9 @@
 {
   "name": "nado-trading-desk",
   "private": true,
-  "repository": { "type": "git", "url": "git+https://github.com/juu17/nado-trading-desk.git" },
-  "homepage": "https://github.com/juu17/nado-trading-desk",
-  "bugs": { "url": "https://github.com/juu17/nado-trading-desk/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/vinpo88/nado-trading-desk.git" },
+  "homepage": "https://github.com/vinpo88/nado-trading-desk",
+  "bugs": { "url": "https://github.com/vinpo88/nado-trading-desk/issues" },
   "packageManager": "pnpm@11.9.0",
   "engines": { "node": ">=22.12.0" },
   "scripts": {
@@ -13,7 +13,11 @@
     "test": "vitest run",
     "redaction:gate": "node scripts/redaction-gate.mjs --enforce",
     "redaction:selftest": "node scripts/redaction-gate.mjs --selftest",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "registration:plan": "node scripts/registration/cli.mjs plan",
+    "registration:status": "node scripts/registration/cli.mjs status",
+    "registration:merge": "node scripts/registration/cli.mjs merge",
+    "test:registration": "node --test scripts/registration/tests/*.test.mjs",
+    "prepare": "node scripts/install-git-hooks.mjs"
   },
   "devDependencies": {
     "turbo": "2.1.3",

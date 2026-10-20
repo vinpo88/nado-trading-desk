@@ -1,0 +1,13 @@
+{
+  "bounds": { "min": 1, "max": 10000 },
+  "start": 10000,
+  "end": 1,
+  "direction": "desc",
+  "laneCount": 1,
+  "laneIndex": 0,
+  "walletsPath": ".local/registration-wallets.json",
+  "progressPaths": [".local/registration-progress.ndjson"],
+  "progressPath": ".local/registration-progress.ndjson",
+  "usernamePrefix": "ybtl",
+  "browser": "iab"
+}

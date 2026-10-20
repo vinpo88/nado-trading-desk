@@ -9,12 +9,7 @@ import { NETWORKS } from "../lib/chainEnv";
 const TESTNET = 763373;
 const MAINNET = 57073;
 
-/** The 2-pole Testnet | Mainnet switch as Kumo's ButtonGroup of toggle Buttons. The active pole is
- *  variant="primary", which paints Kumo's brand — re-pointed per network in globals.css — so it always
- *  shows the current network's accent (Kumo's segmented Tabs would not: its active pill is neutral).
- *  Flipping to TESTNET is instant; MAINNET asks first in a Kumo LayerDialog.Alert whose confirm button
- *  carries data-net="mainnet", so it reads in the mainnet accent while the app is still on testnet.
- *  No env, no rebuild — the selection is a cookie the client + server both read; the switch is live. */
+/** Both choices reload the app after updating its network cookie. Mainnet asks for confirmation. */
 export function NetworkSwitch() {
   const { chainId, setChain } = useNetwork();
   const [confirm, setConfirm] = useState(false);
@@ -22,13 +17,13 @@ export function NetworkSwitch() {
   const pick = (id: number) => {
     if (id === chainId) return;
     if (id === MAINNET) { setConfirm(true); return; } // guard before real funds
-    setChain(id);                                     // testnet is instant
+    setChain(id);
   };
 
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-sm font-medium text-kumo-subtle">Network</span>
-      <ButtonGroup aria-label="Network" className="w-full">
+      <span className="text-sm font-medium text-kumo-subtle">网络</span>
+      <ButtonGroup aria-label="网络" className="w-full">
         {[TESTNET, MAINNET].map((id) => {
           const active = chainId === id;
           return (
@@ -40,24 +35,25 @@ export function NetworkSwitch() {
               className="flex-1 capitalize"
               onClick={() => pick(id)}
             >
-              {NETWORKS[id]!.networkName}
+              {NETWORKS[id]!.isTestnet ? "测试网" : "主网"}
             </Button>
           );
         })}
       </ButtonGroup>
+      <p className="text-xs text-kumo-subtle">切换网络会刷新页面，请重新解锁保险库。</p>
 
       <LayerDialog.Alert open={confirm} onOpenChange={setConfirm}>
         <LayerDialog.Content size="sm">
-          <LayerDialog.Title>Switch to Mainnet?</LayerDialog.Title>
+          <LayerDialog.Title>切换到主网？</LayerDialog.Title>
           <LayerDialog.Description>
-            Mainnet moves <strong className="font-medium text-kumo-default">real funds</strong> — real USDT0 and ETH on Ink.
+            主网连接 Ink 上的真实 USDT0 和 ETH 资产。切换连接本身不会转账或下单。
           </LayerDialog.Description>
           <LayerDialog.Body>
             <Banner
               variant="alert"
               size="sm"
               icon={<WarningIcon weight="fill" />}
-              description="Orders, deposits and withdrawals will be real and irreversible."
+              description="切换后会刷新页面并要求重新解锁。之后手动提交的订单、充值和提现会使用真实资金。"
             />
           </LayerDialog.Body>
           <LayerDialog.Actions>
@@ -66,7 +62,7 @@ export function NetworkSwitch() {
               data-net="mainnet"
               onClick={() => { setConfirm(false); setChain(MAINNET); }}
             >
-              Switch to Mainnet
+              确认切换主网
             </LayerDialog.Actions.Primary>
           </LayerDialog.Actions>
         </LayerDialog.Content>

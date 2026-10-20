@@ -5,6 +5,7 @@
 // custody, not from here. Cached per page load.
 // =============================================================================
 import type { Market } from "@farm/adapter-api";
+import { activeChainId } from "./chainEnv";
 
 export interface LiveProductVM {
   marketId: string; productId: number; symbol: string; kind: "perp" | "spot";
@@ -24,13 +25,19 @@ export interface LiveConfig {
 }
 
 let cfgP: Promise<LiveConfig> | null = null;
+let configChainId: number | undefined;
 
 export function getLiveConfig(force = false): Promise<LiveConfig> {
-  if (force) cfgP = null;
+  const chainId = activeChainId();
+  if (force || configChainId !== chainId) { cfgP = null; configChainId = chainId; }
   if (!cfgP) {
-    cfgP = fetch("/api/nado/state", { cache: "no-store" })
-      .then((r) => r.json() as Promise<LiveConfig>)
-      .catch((e) => { cfgP = null; return { enabled: false, error: e instanceof Error ? e.message : String(e) }; });
+    const request: Promise<LiveConfig> = fetch("/api/nado/state", { cache: "no-store", signal: AbortSignal.timeout(15_000) })
+      .then((r) => { if (!r.ok) throw new Error("无法获取连接状态，请重试。"); return r.json() as Promise<LiveConfig>; })
+      .catch(() => {
+        if (cfgP === request) cfgP = null;
+        return { enabled: false, error: "连接失败或超时，请检查本地服务及网络后重试。" };
+      });
+    cfgP = request;
   }
   return cfgP;
 }

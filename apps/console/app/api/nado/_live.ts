@@ -76,6 +76,7 @@ async function buildPublicConfig(chainId: number): Promise<PublicConfig> {
   const deploy = NADO_DEPLOYMENTS[env];
   const engineUrl = ENGINE_CLIENT_ENDPOINTS[env];
   const engine = new EngineClient({ url: engineUrl }); // keyless: query-only
+  engine.axiosInstance.defaults.timeout = 10_000;
 
   const symResp = (await engine.getSymbols({})) as unknown as { symbols: Record<string, {
     type: unknown; productId: number; symbol: string;

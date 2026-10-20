@@ -37,8 +37,8 @@ export function QrKeyScanner({ onKey, disabled }: { onKey: (key: string) => void
   const start = async () => {
     setErr(null);
     const Ctor = (globalThis as unknown as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector;
-    if (!Ctor) { setErr("QR scanning isn't supported in this browser — paste the key instead."); return; }
-    if (!navigator.mediaDevices?.getUserMedia) { setErr("No camera available in this browser."); return; }
+    if (!Ctor) { setErr("当前浏览器不支持扫码，请改用粘贴私钥。"); return; }
+    if (!navigator.mediaDevices?.getUserMedia) { setErr("当前浏览器无法使用摄像头。"); return; }
     setOpen(true);
     try {
       // Prompts for camera approval the first time, then opens directly. Rear camera when present.
@@ -55,13 +55,13 @@ export function QrKeyScanner({ onKey, disabled }: { onKey: (key: string) => void
           const codes = await detector.detect(videoRef.current);
           const hit = codes.map((c) => normalizePrivateKey(c.rawValue)).find(Boolean);
           if (hit) { onKey(hit); stop(); return; }           // valid private key → hand it off, no clipboard
-          if (codes.length) setErr("Scanned QR is not a private key — keep the key's QR in frame.");
+          if (codes.length) setErr("扫描到的二维码不是私钥，请将私钥二维码保持在画面中。");
         } catch { /* transient per-frame decode error — keep scanning */ }
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
     } catch {
-      setErr("Camera access denied or unavailable.");
+      setErr("摄像头权限被拒绝或设备不可用。");
       stop();
     }
   };
@@ -70,13 +70,13 @@ export function QrKeyScanner({ onKey, disabled }: { onKey: (key: string) => void
     <div className="flex flex-col items-start gap-1.5">
       {open ? (
         <>
-          <video ref={videoRef} muted playsInline className="w-full max-w-xs rounded-lg bg-kumo-recessed ring ring-kumo-line" />
-          <Button size="sm" icon={StopIcon} onClick={stop}>Stop camera</Button>
+          <video ref={videoRef} muted playsInline aria-label="私钥二维码扫描画面" className="w-full max-w-xs rounded-lg bg-kumo-recessed ring ring-kumo-line" />
+          <Button size="sm" icon={StopIcon} onClick={stop}>关闭摄像头</Button>
         </>
       ) : (
-        <Button size="sm" icon={CameraIcon} disabled={disabled} onClick={start}>Scan QR (camera)</Button>
+        <Button size="sm" icon={CameraIcon} disabled={disabled} onClick={start}>用摄像头扫描二维码</Button>
       )}
-      {!open && <Text variant="secondary" size="xs">Scan a key&apos;s QR straight from the camera — keeps it off the clipboard.</Text>}
+      {!open && <Text variant="secondary" size="xs">直接扫描私钥二维码，无需经过剪贴板。</Text>}
       {err && <Text variant="error" size="xs">{err}</Text>}
     </div>
   );

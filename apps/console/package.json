@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p ${PORT:-18270}",
+    "dev": "node scripts/run-next.mjs dev",
     "build": "next build",
-    "start": "next start -H 127.0.0.1 -p ${PORT:-18270}",
+    "start": "node scripts/run-next.mjs start",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
     "test:e2e": "playwright test",
+    "test:bridge": "playwright test -c playwright.bridge.config.ts",
     "test:e2e:caps": "playwright test -c playwright.caps.config.ts"
   },
   "dependencies": {
@@ -21,8 +22,11 @@
     "@nadohq/engine-client": "0.58.0",
     "@nadohq/indexer-client": "0.58.0",
     "@phosphor-icons/react": "2.1.10",
+    "@reown/walletkit": "1.6.0",
     "@tailwindcss/postcss": "4.3.3",
     "@tanstack/react-virtual": "3.10.8",
+    "@walletconnect/core": "2.25.0",
+    "@walletconnect/utils": "2.25.0",
     "next": "15.5.28",
     "qrcode.react": "4.2.0",
     "react": "19.3.1",

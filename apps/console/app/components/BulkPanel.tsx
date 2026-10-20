@@ -15,6 +15,7 @@ import type { BulkParams } from "../lib/bulk";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DynamicForm } from "./DynamicForm";
 import { useNetwork } from "./NetworkProvider";
+import { zhError, zhLabel } from "../lib/zh";
 
 type Stats = Record<"pending" | "running" | "done" | "failed", number>;
 const ZERO: Stats = { pending: 0, running: 0, done: 0, failed: 0 };
@@ -28,14 +29,14 @@ function JitterField({ label, value, setValue, jitter, setJitter, max, setMax }:
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">{label}{jitter ? " (min–max)" : ""}</span>
-        <Checkbox label="jitter" checked={jitter} onCheckedChange={(c) => setJitter(c === true)} />
+        <span className="text-sm font-medium">{label}{jitter ? "（最小值至最大值）" : ""}</span>
+        <Checkbox label="随机范围" checked={jitter} onCheckedChange={(c) => setJitter(c === true)} />
       </div>
       {/* min-w-0 + flex-1: a bare input element keeps its intrinsic size=20 width as its flex minimum, so the
           min–max pair would overrun the 260px sidebar instead of splitting it. */}
       <div className="flex gap-2">
-        <Input size="sm" className="min-w-0 flex-1" aria-label={jitter ? `${label} min` : label} value={value} onChange={(e) => setValue(e.target.value)} />
-        {jitter && <Input size="sm" className="min-w-0 flex-1" aria-label={`${label} max`} value={max} onChange={(e) => setMax(e.target.value)} />}
+        <Input size="sm" className="min-w-0 flex-1" aria-label={jitter ? `${label}最小值` : label} value={value} onChange={(e) => setValue(e.target.value)} />
+        {jitter && <Input size="sm" className="min-w-0 flex-1" aria-label={`${label}最大值`} value={max} onChange={(e) => setMax(e.target.value)} />}
       </div>
     </div>
   );
@@ -156,32 +157,32 @@ export function BulkPanel({ wallets, liveMarkets }: { wallets: WalletVM[]; liveM
       {/* shrink-0: an overflow-hidden flex item in the fixed-height sidebar would otherwise shrink and
           clip its own controls instead of letting the sidebar scroll. */}
       <LayerCard className="shrink-0">
-        <LayerCard.Secondary>Bulk action</LayerCard.Secondary>
+        <LayerCard.Secondary>批量操作</LayerCard.Secondary>
         <LayerCard.Primary className="flex flex-col gap-3">
           {allLive && (
             <Select
               size="sm"
-              label={`Market (live · ${liveMarkets!.length})`}
+              label={`交易市场（在线 · ${liveMarkets!.length}）`}
               hideLabel={false}
               value={market}
               onValueChange={(v) => { if (v) setVal("market", String(v)); }}
             >
               {liveMarkets!.map((m) => (
-                <Select.Option key={m.id} value={m.id}>{m.id.split(":").pop()} ({m.product})</Select.Option>
+                <Select.Option key={m.id} value={m.id}>{m.id.split(":").pop()}（{zhLabel(m.product)}）</Select.Option>
               ))}
             </Select>
           )}
 
           <DynamicForm model={enumModel} values={values} onChange={setVal} />
 
-          <JitterField label="Size" value={size} setValue={setSize} jitter={sizeJitter} setJitter={setSizeJitter} max={sizeMax} setMax={setSizeMax} />
-          {kind === "limit" && <JitterField label="Price" value={price} setValue={setPrice} jitter={priceJitter} setJitter={setPriceJitter} max={priceMax} setMax={setPriceMax} />}
+          <JitterField label="数量" value={size} setValue={setSize} jitter={sizeJitter} setJitter={setSizeJitter} max={sizeMax} setMax={setSizeMax} />
+          {kind === "limit" && <JitterField label="价格" value={price} setValue={setPrice} jitter={priceJitter} setJitter={setPriceJitter} max={priceMax} setMax={setPriceMax} />}
 
-          <Checkbox label="simulate ~8% failures (to test retry)" checked={chaos} onCheckedChange={(c) => setChaos(c === true)} />
+          <Checkbox label="模拟约 8% 失败（用于测试重试）" checked={chaos} onCheckedChange={(c) => setChaos(c === true)} />
 
           <div className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Schedule</span>
-            <ButtonGroup aria-label="Schedule">
+            <span className="text-sm font-medium">执行计划</span>
+            <ButtonGroup aria-label="执行计划">
               {(["once", "interval", "cron"] as const).map((m) => (
                 <Button
                   key={m}
@@ -191,32 +192,32 @@ export function BulkPanel({ wallets, liveMarkets }: { wallets: WalletVM[]; liveM
                   disabled={schedRunning || active}
                   onClick={() => setSchedMode(m)}
                 >
-                  {m === "once" ? "Once" : m === "interval" ? "Every N" : "Cron"}
+                  {m === "once" ? "单次" : m === "interval" ? "固定间隔" : "定时表达式"}
                 </Button>
               ))}
             </ButtonGroup>
             {schedMode === "interval" && (
-              <InputGroup size="sm" label="Every" disabled={schedRunning}>
-                <InputGroup.Input aria-label="Interval (minutes)" value={everyMin} onChange={(e) => setEveryMin(e.target.value)} />
-                <InputGroup.Suffix>min</InputGroup.Suffix>
+              <InputGroup size="sm" label="执行间隔" disabled={schedRunning}>
+                <InputGroup.Input aria-label="间隔（分钟）" value={everyMin} onChange={(e) => setEveryMin(e.target.value)} />
+                <InputGroup.Suffix>分钟</InputGroup.Suffix>
               </InputGroup>
             )}
             {schedMode === "cron" && (
               <Input
                 size="sm"
-                aria-label="Cron expression"
+                aria-label="定时表达式"
                 placeholder="*/15 * * * *"
                 className="font-mono"
                 value={cronExpr}
                 onChange={(e) => setCronExpr(e.target.value)}
                 disabled={schedRunning}
-                error={cronValid ? undefined : "✗ invalid"}
+                error={cronValid ? undefined : "✗ 表达式无效"}
               />
             )}
             {schedMode !== "once" && (
-              <InputGroup size="sm" label="Stop after" disabled={schedRunning}>
-                <InputGroup.Input aria-label="Max runs" value={maxRuns} onChange={(e) => setMaxRuns(e.target.value)} />
-                <InputGroup.Suffix>runs</InputGroup.Suffix>
+              <InputGroup size="sm" label="达到次数后停止" disabled={schedRunning}>
+                <InputGroup.Input aria-label="最多执行次数" value={maxRuns} onChange={(e) => setMaxRuns(e.target.value)} />
+                <InputGroup.Suffix>次</InputGroup.Suffix>
               </InputGroup>
             )}
           </div>
@@ -226,7 +227,7 @@ export function BulkPanel({ wallets, liveMarkets }: { wallets: WalletVM[]; liveM
             onClick={() => setConfirmOpen(true)}
             disabled={active || schedRunning || list.length === 0 || (schedMode === "cron" && !cronValid)}
           >
-            {schedMode === "once" ? `Run on ${list.length} wallets` : `Start schedule on ${list.length} wallets`}
+            {schedMode === "once" ? `在 ${list.length} 个钱包上执行` : `启动 ${list.length} 个钱包的定时任务`}
           </Button>
 
           {/* A running schedule is a NETWORK-ACCENT state (brand-tinted tokens), not Kumo's info blue. */}
@@ -234,29 +235,29 @@ export function BulkPanel({ wallets, liveMarkets }: { wallets: WalletVM[]; liveM
             <div className="flex items-center justify-between gap-2 rounded-md bg-kumo-brand/10 px-3 py-2 ring ring-kumo-brand/40">
               <span className="flex items-center gap-1.5">
                 <TimerIcon className="shrink-0 text-kumo-brand" />
-                Schedule running · {schedMode === "interval" ? `every ${everyN} min` : `cron ${cronExpr}`} · stops after {runsCap} runs
+                定时任务执行中 · {schedMode === "interval" ? `每 ${everyN} 分钟` : `表达式 ${cronExpr}`} · 执行 {runsCap} 次后停止
               </span>
-              <Button size="sm" onClick={stopSchedule}>Stop schedule</Button>
+              <Button size="sm" onClick={stopSchedule}>停止定时任务</Button>
             </div>
           )}
-          {schedErr && <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} description={`schedule error: ${schedErr}`} />}
+          {schedErr && <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} description={`定时任务错误：${zhError(schedErr)}`} />}
 
           {(active || total > 0) && (
             <div className="flex flex-col gap-2">
-              <Meter label="Progress" value={pct} customValue={`${stats.done + stats.failed} / ${total}`} showValue />
+              <Meter label="执行进度" value={pct} customValue={`${stats.done + stats.failed} / ${total}`} showValue />
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums">
-                <span><span className="text-kumo-subtle">done</span> <strong className="font-medium text-kumo-success">{stats.done}</strong></span>
-                <span><span className="text-kumo-subtle">running</span> <strong className="font-medium">{stats.running}</strong></span>
-                <span><span className="text-kumo-subtle">pending</span> <strong className="font-medium text-kumo-subtle">{stats.pending}</strong></span>
-                {stats.failed > 0 && <span><span className="text-kumo-subtle">failed</span> <strong className="font-medium text-kumo-danger">{stats.failed}</strong></span>}
+                <span><span className="text-kumo-subtle">已完成</span> <strong className="font-medium text-kumo-success">{stats.done}</strong></span>
+                <span><span className="text-kumo-subtle">执行中</span> <strong className="font-medium">{stats.running}</strong></span>
+                <span><span className="text-kumo-subtle">等待中</span> <strong className="font-medium text-kumo-subtle">{stats.pending}</strong></span>
+                {stats.failed > 0 && <span><span className="text-kumo-subtle">失败</span> <strong className="font-medium text-kumo-danger">{stats.failed}</strong></span>}
               </div>
               <div className="flex flex-wrap gap-2">
                 {!halted ? (
-                  <Button variant="destructive" icon={ProhibitIcon} onClick={() => { bulk.halt(); setHalted(true); }} disabled={!active}>Kill switch</Button>
+                  <Button variant="destructive" icon={ProhibitIcon} onClick={() => { bulk.halt(); setHalted(true); }} disabled={!active}>紧急停止</Button>
                 ) : (
-                  <Button icon={PlayIcon} onClick={() => { bulk.resume(); setHalted(false); setActive(true); poll(); }}>Resume</Button>
+                  <Button icon={PlayIcon} onClick={() => { bulk.resume(); setHalted(false); setActive(true); poll(); }}>继续执行</Button>
                 )}
-                {!active && stats.failed > 0 && <Button icon={ArrowClockwiseIcon} onClick={retry}>Retry {stats.failed} failed</Button>}
+                {!active && stats.failed > 0 && <Button icon={ArrowClockwiseIcon} onClick={retry}>重试 {stats.failed} 个失败任务</Button>}
               </div>
             </div>
           )}
@@ -265,19 +266,19 @@ export function BulkPanel({ wallets, liveMarkets }: { wallets: WalletVM[]; liveM
 
       <ConfirmDialog
         open={confirmOpen}
-        title="Fire bulk action"
+        title="执行批量操作"
         body={<>
-          Place {em(list.length)} {side} {kind} order(s) across {em(list.length)} wallets on {market.split(":").pop()}.
+          在 {em(list.length)} 个钱包的 {market.split(":").pop()} 市场上提交 {em(list.length)} 笔{zhLabel(side)}{zhLabel(kind)}订单。
           {schedMode !== "once" && liveCount === 0 && (
-            <> Runs on a {em("recurring")} schedule ({schedMode === "interval" ? `every ${everyN} min` : `cron ${cronExpr}`}), up to {runsCap} times or until you press {em("Stop schedule")}.</>
+            <> 按{em("周期计划")}执行（{schedMode === "interval" ? `每 ${everyN} 分钟` : `表达式 ${cronExpr}`}），最多 {runsCap} 次，也可点击{em("停止定时任务")}提前结束。</>
           )}
         </>}
         danger={liveCount > 0 ? (
           <>
-            {em(liveCount)} live {net.networkName} wallet{liveCount > 1 ? "s" : ""} in this target — {liveCount} real maker order{liveCount > 1 ? "s" : ""} signed + sent to the sequencer
+            本次包含 {em(liveCount)} 个{net.isTestnet ? "测试网" : "主网"}在线钱包，将签名并提交 {liveCount} 笔实际挂单
             {schedMode !== "once"
-              ? <> {em("each")} {schedMode === "interval" ? `${everyN}-min` : "cron"} fire, repeating up to {em(runsCap)} times (Stop schedule to end early).</>
-              : <> (price/market resolved server-side to a valid resting maker).</>}
+              ? <>，{em("每次")}按{schedMode === "interval" ? `${everyN} 分钟间隔` : "定时表达式"}执行，最多重复 {em(runsCap)} 次（可停止定时任务提前结束）。</>
+              : <>，价格和数量将按市场规则处理。</>}
           </>
         ) : undefined}
         onConfirm={run}

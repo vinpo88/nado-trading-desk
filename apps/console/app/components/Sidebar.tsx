@@ -10,6 +10,7 @@ import { FundingPanel } from "./FundingPanel";
 import type { InTabProduct } from "../lib/liveClient";
 import { NetworkSwitch } from "./NetworkSwitch";
 import { useNetwork } from "./NetworkProvider";
+import { zhError, zhLabel } from "../lib/zh";
 
 interface Props {
   workspaceName: string;
@@ -24,6 +25,10 @@ interface Props {
   onToggleCohort: (c: string) => void;
   liveMarkets?: Market[];
   liveEnabled?: boolean;
+  onlineAvailable?: boolean;
+  connecting?: boolean;
+  connectionError?: string;
+  onRetryConnection?: () => void;
   liveDefaultProduct?: InTabProduct;
   liveCohortSize?: number;
   onLiveCohortChange?: () => void;
@@ -45,43 +50,51 @@ export function Sidebar(props: Props) {
     <KumoSidebar>
       <KumoSidebar.Header>
         <div className="flex min-w-0 flex-col">
-          <Text variant="heading" as="span">Nado Trading Desk</Text>
-          <Text variant="secondary" size="xs" as="span">Fleet console · {props.workspaceName}</Text>
+          <Text variant="heading" as="span">Nado 交易台</Text>
+          <Text variant="secondary" size="xs" as="span">{props.liveEnabled ? "联网管理" : "本地钱包浏览"} · {props.workspaceName}</Text>
         </div>
       </KumoSidebar.Header>
 
       <KumoSidebar.Content>
         <div className="flex flex-col gap-5">
           <Meter
-            label="Wallets shown"
+            label="显示的钱包"
             value={props.shownWallets}
             max={Math.max(props.totalWallets, 1)}
             customValue={`${props.shownWallets} / ${props.totalWallets}`}
             showValue
           />
 
-          <NetworkSwitch />
+          {(props.liveEnabled || props.onlineAvailable) && <NetworkSwitch />}
+          <div className="flex flex-col gap-2 text-xs text-kumo-subtle" data-testid="connection-status">
+            {props.connecting ? <p>正在检测连接…</p> : props.connectionError ? (
+              <p role="alert">{zhError(props.connectionError)}</p>
+            ) : !props.liveEnabled ? (
+              <p>当前为离线模式。请双击仓库中的 Start-Nado-Online.cmd 开启在线服务，再重新检测连接。</p>
+            ) : <p>已连接{zhLabel(net.networkName)}。连接本身不会下单或转账。</p>}
+            <Button size="sm" disabled={props.connecting} onClick={props.onRetryConnection}>重新检测连接</Button>
+          </div>
 
           <div className="flex flex-col gap-2">
-            <Label>Accounts</Label>
+            <Label>账户</Label>
             <AccountFilter options={props.accountOptions} selected={props.selectedAccounts} onChange={props.onAccountsChange} />
           </div>
 
           <div className="flex flex-col gap-2">
-            <Label>Cohorts (tags)</Label>
+            <Label>钱包分组</Label>
             <div className="flex flex-wrap gap-1">
               {props.cohorts.map((c) => {
                 const on = props.selectedCohorts.has(c);
                 return (
                   <Button key={c} size="xs" variant={on ? "primary" : "secondary"} aria-pressed={on} onClick={() => props.onToggleCohort(c)}>
-                    {c}
+                    {zhLabel(c)}
                   </Button>
                 );
               })}
             </div>
           </div>
 
-          <BulkPanel wallets={props.shown} liveMarkets={props.liveMarkets} />
+          {props.liveEnabled && <BulkPanel wallets={props.shown} liveMarkets={props.liveMarkets} />}
 
           {props.liveEnabled && <CustodyPanel cohortSize={props.liveCohortSize} product={props.liveDefaultProduct} onCohortChange={props.onLiveCohortChange} isTestnet={net.isTestnet} />}
 
@@ -91,8 +104,8 @@ export function Sidebar(props: Props) {
 
           <Text variant="secondary" size="xs">
             {props.liveEnabled
-              ? `Live ${net.networkName} enabled · live-cohort fires sign + submit to the real sequencer; mock wallets stay offline`
-              : "Offline mock · no testnet · actions run the real adapter + plan runner"}
+              ? `已连接${zhLabel(net.networkName)}。最多为 50 个当前可见钱包建立实时订阅，其余钱包按限速轮询；点击钱包可优先查询。余额显示“—”表示尚未获取。`
+              : "浏览本机保存的钱包地址。离线时不查询余额、订单和交易就绪状态。"}
           </Text>
         </div>
       </KumoSidebar.Content>

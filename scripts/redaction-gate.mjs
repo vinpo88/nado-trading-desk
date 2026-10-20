@@ -25,7 +25,7 @@ const home = os.homedir();
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const SKIP = /(^|\/)(node_modules|dist|\.next|\.turbo|\.git|build|coverage|recordings|pnpm-lock\.yaml)(\/|$)/;
-const TEXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|css|html|sh|toml)$/;
+const TEXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|css|html|sh|ps1|cmd|bat|toml)$|(^|\/)\.env\.example$/;
 const ALLOW_DOMAINS = ["example.com", "example.org", "example.net", "test.com", "localhost", "anthropic.com", "noreply.github.com", "users.noreply.github.com", "inkonchain.com"];
 
 // Path/username classes are scoped to path-like contexts so common words (a CI

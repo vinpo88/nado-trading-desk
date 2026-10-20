@@ -13,7 +13,7 @@
 import type { WalletSigner, Hex, Eip712TypedData, Address } from "@farm/adapter-api";
 // Type-only (no runtime/bundle cost — the wative module itself stays lazy-loaded below), so the in-tab
 // FUNDING path can call buildTransaction on the sealed signer type-safely instead of a blind cast.
-import type { Address as WativeEvmAddress } from "wative-core";
+import type { Address as WativeEvmAddress, ContainerEntry } from "wative-core";
 
 export type AccountKind = "HD" | "PK";
 export interface CohortWallet {
@@ -52,10 +52,19 @@ interface BrowserAccountCollection {
   length: number;
   [i: number]: BrowserAccount;
 }
-interface BrowserWorkspace { accounts: BrowserAccountCollection & BrowserAccount[] }
+interface BrowserProvider {
+  exportContainer(): Promise<readonly ContainerEntry[]>;
+  importContainer(entries: readonly ContainerEntry[]): Promise<void>;
+  inspectContainer(): Promise<"empty" | "workspace" | "foreign">;
+  close(): Promise<void>;
+}
+interface BrowserWorkspace {
+  accounts: BrowserAccountCollection & BrowserAccount[];
+  close(): Promise<void>;
+}
 interface BrowserWative {
   newMnemonic: (words?: number) => string;
-  IdbProviderV3: { create(name: string, opts?: { acknowledgeEvictionRisk?: boolean }): Promise<unknown> };
+  IdbProviderV3: { create(name: string, opts?: { acknowledgeEvictionRisk?: boolean }): Promise<BrowserProvider> };
   Workspace: { open(provider: unknown, password?: string, create?: boolean): Promise<BrowserWorkspace> };
 }
 
@@ -73,12 +82,13 @@ async function sdk(): Promise<{ subaccountToHex: (p: { subaccountOwner: string; 
 interface SessionAccount { acc: BrowserAccount; slug: string; name: string; kind: AccountKind }
 let session: {
   ws: BrowserWorkspace;
+  storage: BrowserProvider;
   accounts: SessionAccount[];
   wallets: CohortWallet[];
   evmByWalletId: Map<string, BrowserEvm>;
 } | null = null;
 
-async function provider(): Promise<unknown> {
+async function provider(): Promise<BrowserProvider> {
   const w = await wative();
   // disposable-cache ack: the eviction risk is acceptable for the operator's own vault
   return w.IdbProviderV3.create(DB_NAME, { acknowledgeEvictionRisk: true });
@@ -120,15 +130,42 @@ async function rebuildFlat(): Promise<CohortWallet[]> {
 
 // Load (or reload) every account from an open workspace into the session, unlocking each with the
 // workspace password (shared accounts auto-open; we don't use per-account passwords).
-async function loadSession(ws: BrowserWorkspace, password: string): Promise<void> {
+async function loadSession(ws: BrowserWorkspace, password: string, storage: BrowserProvider): Promise<void> {
   const accounts: SessionAccount[] = [];
   for (let i = 0; i < ws.accounts.length; i++) {
     const acc = ws.accounts[i]!;
     await acc.tryUnlock(password);
     accounts.push({ acc, slug: acc.slug, name: acc.displayName, kind: kindOf(acc) });
   }
-  session = { ws, accounts, wallets: [], evmByWalletId: new Map() };
+  session = { ws, storage, accounts, wallets: [], evmByWalletId: new Map() };
   await rebuildFlat();
+}
+
+async function openSession(password: string, create: boolean): Promise<void> {
+  const w = await wative();
+  const storage = await provider();
+  let ws: BrowserWorkspace | undefined;
+  try {
+    ws = await w.Workspace.open(storage, password, create);
+    await loadSession(ws, password, storage);
+  } catch (e) {
+    forgetFailedSession(ws);
+    if (ws) await ws.close(); else await storage.close();
+    throw e;
+  }
+}
+
+function forgetFailedSession(ws: BrowserWorkspace | undefined): void {
+  if (ws && session?.ws === ws) session = null;
+}
+
+// Serializes onboarding and backup imports across tabs. The provider also refuses
+// importing into a nonempty container; no caller ever asks it to overwrite one.
+async function withVaultCreationLock<T>(action: () => Promise<T>): Promise<T> {
+  if (typeof navigator !== "undefined" && navigator.locks) {
+    return navigator.locks.request(`${DB_NAME}:create-or-restore`, action);
+  }
+  return action();
 }
 
 function isWorkspaceLocked(e: unknown): boolean {
@@ -142,14 +179,13 @@ function isWorkspaceLocked(e: unknown): boolean {
 // KEK-resumed session no longer holds (unlock no-ops on an unlocked KEK) → WORKSPACE_LOCKED; recover by
 // re-opening (re-auth) with the password + retrying. Returns the new account's session entry.
 async function addAccount(name: string, password: string, secret: string, kind: AccountKind): Promise<SessionAccount> {
-  const w = await wative();
-  if (!session) await loadSession(await w.Workspace.open(await provider(), password, true), password);
+  if (!session) await withVaultCreationLock(() => openSession(password, true));
   let acc: BrowserAccount;
   try {
     acc = await session!.ws.accounts.create(name, password, secret);
   } catch (e) {
     if (!isWorkspaceLocked(e)) throw e;
-    await loadSession(await w.Workspace.open(await provider(), password, false), password); // re-auth
+    await openSession(password, false); // re-auth
     acc = await session!.ws.accounts.create(name, password, secret);
   }
   const sa: SessionAccount = { acc, slug: acc.slug, name: acc.displayName, kind };
@@ -170,15 +206,44 @@ export async function vaultStatus(): Promise<VaultStatus> {
 
 /** Create a fresh, EMPTY vault (onboarding) with a workspace password. */
 export async function createVault(password: string): Promise<void> {
-  const w = await wative();
-  await loadSession(await w.Workspace.open(await provider(), password, true), password);
+  await withVaultCreationLock(() => openSession(password, true));
 }
 
 /** Open + unlock the existing vault, loading all accounts. Returns the account list. */
 export async function unlockVault(password: string): Promise<AccountVM[]> {
-  const w = await wative();
-  await loadSession(await w.Workspace.open(await provider(), password, false), password);
+  await openSession(password, false);
   return listAccounts();
+}
+
+/** Encrypted native records only. Password verification happens on an isolated copy
+ * in vaultBackup.ts before a backup can be downloaded. */
+export async function exportEncryptedVault(): Promise<readonly ContainerEntry[]> {
+  if (!session) throw new Error("请先解锁保险库。");
+  return session.storage.exportContainer();
+}
+
+/** Restore already-validated encrypted records ONLY into a browser with no vault.
+ * Deliberately offers no merge, overwrite or delete path. Verification is performed
+ * by vaultBackup.ts before this function is called. */
+export async function restoreEncryptedVault(entries: readonly ContainerEntry[], password: string): Promise<void> {
+  await withVaultCreationLock(async () => {
+    if (session || await vaultStatus() !== "absent") {
+      throw new Error("此浏览器已有保险库，恢复已停止。请在没有保险库的新浏览器配置中恢复。");
+    }
+    const w = await wative();
+    const storage = await provider();
+    let ws: BrowserWorkspace | undefined;
+    try {
+      if (await storage.inspectContainer() !== "empty") throw new Error("已有保险库");
+      await storage.importContainer(entries);
+      ws = await w.Workspace.open(storage, password, false);
+      await loadSession(ws, password, storage);
+    } catch {
+      forgetFailedSession(ws);
+      try { if (ws) await ws.close(); else await storage.close(); } catch { /* keep the recovery error generic */ }
+      throw new Error("恢复未完成。原有数据不会被覆盖；请保留备份文件并刷新页面检查状态。");
+    }
+  });
 }
 
 /** Create an HD account (fresh mnemonic when none is given) and derive `count` wallets (min 1). */

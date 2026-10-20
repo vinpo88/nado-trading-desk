@@ -2,6 +2,7 @@
 
 import { Button, ButtonGroup, Checkbox, Input } from "@cloudflare/kumo";
 import type { FormModel, ParamValue } from "@farm/adapter-api";
+import { zhLabel } from "../lib/zh";
 
 /** Renders a FormModel (built by renderActionForm from a manifest schema) into Kumo controls —
  *  enum → a ButtonGroup of toggle Buttons (the app-wide single-select idiom: the selected option is
@@ -20,8 +21,8 @@ export function DynamicForm({ model, values, onChange }: {
         if (s.kind === "enum") {
           return (
             <div key={s.id} className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium">{s.label}</span>
-              <ButtonGroup aria-label={s.label}>
+              <span className="text-sm font-medium">{zhLabel(s.label)}</span>
+              <ButtonGroup aria-label={zhLabel(s.label)}>
                 {(s.options ?? []).map((o) => (
                   <Button
                     key={o.value}
@@ -30,7 +31,7 @@ export function DynamicForm({ model, values, onChange }: {
                     aria-pressed={v === o.value}
                     onClick={() => onChange(s.id, o.value)}
                   >
-                    {o.label}
+                    {s.id === "kind" ? zhLabel(o.value) : zhLabel(o.label)}
                   </Button>
                 ))}
               </ButtonGroup>
@@ -38,13 +39,13 @@ export function DynamicForm({ model, values, onChange }: {
           );
         }
         if (s.kind === "bool") {
-          return <Checkbox key={s.id} label={s.label} checked={Boolean(v)} onCheckedChange={(c) => onChange(s.id, c === true)} />;
+          return <Checkbox key={s.id} label={zhLabel(s.label)} checked={Boolean(v)} onCheckedChange={(c) => onChange(s.id, c === true)} />;
         }
         return (
           <Input
             key={s.id}
             size="sm"
-            label={s.unit ? `${s.label} (${s.unit})` : s.label}
+            label={s.unit ? `${zhLabel(s.label)}（${zhLabel(s.unit)}）` : zhLabel(s.label)}
             value={String(v ?? "")}
             onChange={(e) => onChange(s.id, e.target.value)}
           />

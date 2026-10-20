@@ -23,9 +23,9 @@ export function AccountFilter({ options, selected, onChange }: Props) {
     onChange(next);
   };
 
-  const label = selected.size === options.length ? "All accounts"
-    : selected.size === 0 ? "No accounts"
-    : `${selected.size} of ${options.length} accounts`;
+  const label = selected.size === options.length ? "全部账户"
+    : selected.size === 0 ? "未选择账户"
+    : `已选 ${selected.size} / ${options.length} 个账户`;
 
   return (
     <Popover>
@@ -40,8 +40,8 @@ export function AccountFilter({ options, selected, onChange }: Props) {
       {/* Trigger-width (Base UI's --anchor-width), start-aligned, like the field it drops from. */}
       <Popover.Content align="start" sideOffset={4} className="flex w-(--anchor-width) flex-col gap-2 p-2">
         <div className="flex gap-1">
-          <Button size="xs" variant="secondary" onClick={() => onChange(new Set(options.map((o) => o.id)))}>All</Button>
-          <Button size="xs" variant="secondary" onClick={() => onChange(new Set())}>None</Button>
+          <Button size="xs" variant="secondary" onClick={() => onChange(new Set(options.map((o) => o.id)))}>全选</Button>
+          <Button size="xs" variant="secondary" onClick={() => onChange(new Set())}>全不选</Button>
         </div>
         {/* py-0.5 absorbs a 1px sub-pixel overflow that otherwise raises the auto scrollbar on one row. */}
         <ul className="flex max-h-80 flex-col gap-0.5 overflow-y-auto py-0.5">
@@ -49,7 +49,7 @@ export function AccountFilter({ options, selected, onChange }: Props) {
             <li key={o.id} className="flex items-center justify-between gap-2 rounded-sm px-1 py-1 hover:bg-kumo-tint">
               <Checkbox checked={selected.has(o.id)} onCheckedChange={() => toggle(o.id)} label={o.name} />
               <span className="flex shrink-0 items-center gap-1 tabular-nums text-kumo-subtle">
-                <AccountKindBadge kind={o.kind}>{o.kind}</AccountKindBadge>
+                <AccountKindBadge kind={o.kind}>{o.kind === "HD" ? "助记词" : "私钥"}</AccountKindBadge>
                 {o.count}
               </span>
             </li>

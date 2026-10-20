@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Badge, Banner, Breadcrumbs, Button, ButtonGroup, Empty, Grid, Input, InputArea, LayerCard, Text } from "@cloudflare/kumo";
+import { Badge, Banner, ButtonGroup, Empty, Grid, Input, InputArea, LayerCard, LinkButton, Text } from "@cloudflare/kumo";
 import { DownloadSimpleIcon, KeyIcon, LockIcon, PencilSimpleIcon, PlusIcon, TrashIcon, UsersThreeIcon, WalletIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import {
   listAccounts, createHdAccount, createPkAccount, deriveMore, importKeys, renameAccount, dropAccount, accountAddresses,
@@ -9,6 +9,8 @@ import {
 import type { AccountVM, AccountKind } from "../lib/custody";
 import { QrKeyScanner } from "../components/QrKeyScanner";
 import { useVault } from "../components/AppGate";
+import { VaultBackupPanel } from "../components/VaultBackupPanel";
+import { ChineseButton as Button } from "../components/ChineseButton";
 
 const splitKeys = (s: string): string[] => s.split(/[\s,]+/).map((k) => k.trim()).filter(Boolean);
 
@@ -19,44 +21,50 @@ const splitKeys = (s: string): string[] => s.split(/[\s,]+/).map((k) => k.trim()
 export default function AccountsPage() {
   const { relock } = useVault();
   const [accounts, setAccounts] = useState<AccountVM[]>([]);
+  const [backupBusy, setBackupBusy] = useState(false);
   // session is populated by the gate before this renders; refresh on mount (and after every op).
   useEffect(() => { setAccounts(listAccounts()); }, []);
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <header className="flex items-center justify-between gap-4 border-b border-kumo-line bg-kumo-base px-4 py-3">
-        <Breadcrumbs size="sm">
-          <Breadcrumbs.Link href="/" icon={<WalletIcon size={16} />}>Wallets</Breadcrumbs.Link>
-          <Breadcrumbs.Separator />
-          <Breadcrumbs.Current>Accounts</Breadcrumbs.Current>
-        </Breadcrumbs>
-        <Button icon={LockIcon} onClick={relock}>Lock vault</Button>
+        <nav aria-label="页面导航" className="flex items-center gap-2 text-sm">
+          <LinkButton href="/" variant="ghost" size="sm" icon={WalletIcon}>钱包</LinkButton>
+          <span aria-hidden="true">/</span>
+          <span aria-current="page">账户</span>
+          <LinkButton href="/connect" variant="secondary" size="sm">连接 Nado 官网</LinkButton>
+        </nav>
+        <Button icon={LockIcon} disabled={backupBusy} onClick={relock}>锁定保险库</Button>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
           <div className="flex flex-col gap-1">
-            <Text variant="heading" size="lg" as="h1">Accounts</Text>
-            <Text variant="secondary">{accounts.length} account(s) in this vault</Text>
+            <Text variant="heading" size="lg" as="h1">账户</Text>
+            <Text variant="secondary">此保险库中有 {accounts.length} 个账户</Text>
           </div>
 
+          <VaultBackupPanel mode="manage" onBusyChange={setBackupBusy} />
+
+          <fieldset disabled={backupBusy} className="contents">
           <CreateAccountForm onCreated={setAccounts} />
 
           <div className="flex flex-col gap-3">
-            <Text variant="heading" as="h2">Your accounts</Text>
+            <Text variant="heading" as="h2">我的账户</Text>
             {accounts.length === 0 ? (
               <LayerCard className="p-0">
                 <Empty
                   size="sm"
                   icon={<UsersThreeIcon size={32} className="text-kumo-inactive" />}
-                  title="No accounts yet"
-                  description="Create an HD or PK account above."
+                  title="暂无账户"
+                  description="请在上方创建助记词账户（HD）或私钥账户（PK）。"
                 />
               </LayerCard>
             ) : (
               accounts.map((a) => <AccountBlock key={a.slug} account={a} onChange={setAccounts} />)
             )}
           </div>
+          </fieldset>
         </div>
       </div>
     </div>
@@ -84,36 +92,36 @@ function CreateAccountForm({ onCreated }: { onCreated: (accounts: AccountVM[]) =
         ? await createHdAccount(name.trim(), password, mnemonic.trim() || undefined, count)
         : await createPkAccount(name.trim(), password, splitKeys(privKeys));
       onCreated(accounts);
-      setMsg(`✓ created ${kind} account “${name.trim()}”`);
+      setMsg(`✓ 已创建${kind === "HD" ? "助记词" : "私钥"}账户“${name.trim()}”`);
       setName(""); setPassword(""); setMnemonic(""); setPrivKeys(""); setCount(1);
-    } catch (e) { setMsg(`✗ ${(e as Error).message}`); }
+    } catch { setMsg("✗ 创建账户失败，请检查保险库密码、账户名称和导入内容。"); }
     finally { setBusy(false); }
   };
 
   return (
     <LayerCard>
-      <LayerCard.Secondary>Create an account</LayerCard.Secondary>
+      <LayerCard.Secondary>创建账户</LayerCard.Secondary>
       <LayerCard.Primary className="flex flex-col gap-4">
         {/* kind toggle — the app-wide single-select idiom (selected = network brand) */}
-        <ButtonGroup aria-label="Account kind">
+        <ButtonGroup aria-label="账户类型">
           {(["HD", "PK"] as const).map((k) => (
             <Button key={k} size="sm" variant={kind === k ? "primary" : "secondary"} aria-pressed={kind === k} onClick={() => setKind(k)}>
-              {k === "HD" ? "HD (derive wallets)" : "PK (import keys)"}
+              {k === "HD" ? "HD（派生钱包）" : "PK（导入私钥）"}
             </Button>
           ))}
         </ButtonGroup>
 
         <Grid variant="2up" gap="sm">
-          <Input label="Account name" placeholder="e.g. market-makers" passwordManagerIgnore value={name} onChange={(e) => setName(e.target.value)} />
-          <Input type="password" label="Vault password" placeholder="vault password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <Input label="账户名称" placeholder="例如：批量钱包" passwordManagerIgnore value={name} onChange={(e) => setName(e.target.value)} />
+          <Input type="password" label="保险库密码" placeholder="输入保险库密码" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </Grid>
 
         {kind === "HD" ? (
           <div className="flex flex-col gap-3">
             <InputArea
-              label="Mnemonic"
-              description="Optional — leave blank to generate a fresh one in this tab."
-              placeholder="word1 word2 … (leave blank to generate)"
+              label="助记词"
+              description="选填，留空将在此浏览器标签页中生成新助记词。"
+              placeholder="按顺序输入助记词，以空格分隔；留空则自动生成"
               rows={2}
               spellCheck={false}
               autoComplete="off"
@@ -123,7 +131,7 @@ function CreateAccountForm({ onCreated }: { onCreated: (accounts: AccountVM[]) =
             <Input
               type="number"
               min={1}
-              label="Wallets to derive"
+              label="派生钱包数量"
               className="w-40"
               value={count}
               onChange={(e) => setCount(Math.max(1, Number(e.target.value) || 1))}
@@ -132,9 +140,9 @@ function CreateAccountForm({ onCreated }: { onCreated: (accounts: AccountVM[]) =
         ) : (
           <div className="flex flex-col gap-2">
             <InputArea
-              label="Private keys"
-              description="One 0x EVM key per line — one wallet per key."
-              placeholder="0x… — one private key per line"
+              label="私钥"
+              description="每行输入一个以 0x 开头的 EVM 私钥，每个私钥对应一个钱包。"
+              placeholder="0x…，每行一个私钥"
               rows={3}
               spellCheck={false}
               autoComplete="off"
@@ -146,13 +154,13 @@ function CreateAccountForm({ onCreated }: { onCreated: (accounts: AccountVM[]) =
         )}
 
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="primary" loading={busy} disabled={!canSubmit} onClick={submit}>Create account</Button>
+          <Button variant="primary" loading={busy} disabled={!canSubmit} onClick={submit}>创建账户</Button>
           {msg && (msg.startsWith("✗")
             ? <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} description={msg} />
             : <span className="text-kumo-success">{msg}</span>)}
         </div>
         <Text variant="secondary" size="xs">
-          Keys are generated/imported and sign in this browser tab (IndexedDB) and never reach the server. The vault password seals the new account.
+          密钥在此浏览器中生成、导入和签名，加密保存在本地，始终不会发送至服务器。保险库密码用于加密新账户。
         </Text>
       </LayerCard.Primary>
     </LayerCard>
@@ -174,7 +182,7 @@ function AccountBlock({ account, onChange }: { account: AccountVM; onChange: (ac
   const run = async (fn: () => Promise<AccountVM[]>, after?: () => void) => {
     setBusy(true); setMsg(null);
     try { onChange(await fn()); after?.(); }
-    catch (e) { setMsg(`✗ ${(e as Error).message}`); }
+    catch { setMsg("✗ 操作失败，请检查输入后重试。"); }
     finally { setBusy(false); }
   };
 
@@ -199,29 +207,29 @@ function AccountBlock({ account, onChange }: { account: AccountVM; onChange: (ac
           {renaming ? (
             <>
               {/* The ONLY textbox in the block while renaming (the e2e addresses it that way). */}
-              <Input size="sm" aria-label="Account name" className="w-48" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} />
-              <Button size="sm" variant="primary" loading={busy} disabled={busy || !newName.trim()} onClick={() => run(() => renameAccount(account.slug, newName), () => setRenaming(false))}>Save</Button>
-              <Button size="sm" variant="ghost" onClick={() => { setRenaming(false); setNewName(account.name); }}>Cancel</Button>
+              <Input size="sm" aria-label="账户名称" className="w-48" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} />
+              <Button size="sm" variant="primary" loading={busy} disabled={busy || !newName.trim()} onClick={() => run(() => renameAccount(account.slug, newName), () => setRenaming(false))}>保存</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setRenaming(false); setNewName(account.name); }}>取消</Button>
             </>
           ) : (
             <>
               <Text bold as="span">{account.name}</Text>
-              <Badge variant="secondary">{account.kind}</Badge>
-              <Text variant="secondary" size="xs" as="span">{account.walletCount} wallet(s)</Text>
+              <Badge variant="secondary">{account.kind === "HD" ? "助记词账户（HD）" : "私钥账户（PK）"}</Badge>
+              <Text variant="secondary" size="xs" as="span">{account.walletCount} 个钱包</Text>
             </>
           )}
         </div>
         {!renaming && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" icon={DownloadSimpleIcon} disabled={busy || account.walletCount === 0} onClick={exportAddresses}>Export addresses</Button>
-            <Button size="sm" icon={PencilSimpleIcon} disabled={busy} onClick={() => setRenaming(true)}>Rename</Button>
+            <Button size="sm" icon={DownloadSimpleIcon} disabled={busy || account.walletCount === 0} onClick={exportAddresses}>导出地址</Button>
+            <Button size="sm" icon={PencilSimpleIcon} disabled={busy} onClick={() => setRenaming(true)}>重命名</Button>
             {confirmDrop ? (
               <>
-                <Button size="sm" variant="destructive" loading={busy} onClick={() => run(() => dropAccount(account.slug))}>Confirm drop</Button>
-                <Button size="sm" variant="ghost" onClick={() => setConfirmDrop(false)}>Cancel</Button>
+                <Button size="sm" variant="destructive" loading={busy} onClick={() => run(() => dropAccount(account.slug))}>确认删除</Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmDrop(false)}>取消</Button>
               </>
             ) : (
-              <Button size="sm" variant="secondary-destructive" icon={TrashIcon} disabled={busy} onClick={() => setConfirmDrop(true)}>Drop</Button>
+              <Button size="sm" variant="secondary-destructive" icon={TrashIcon} disabled={busy} onClick={() => setConfirmDrop(true)}>删除</Button>
             )}
           </div>
         )}
@@ -230,20 +238,20 @@ function AccountBlock({ account, onChange }: { account: AccountVM; onChange: (ac
       <LayerCard.Primary className="flex flex-col gap-2">
         {account.kind === "HD" ? (
           <div className="flex items-center gap-2">
-            <Input type="number" min={1} size="sm" aria-label="Number of wallets to add" className="w-20" value={deriveN} onChange={(e) => setDeriveN(Math.max(1, Number(e.target.value) || 1))} />
-            <Button size="sm" icon={PlusIcon} loading={busy} onClick={() => run(() => deriveMore(account.slug, deriveN))}>Derive more wallets</Button>
+            <Input type="number" min={1} size="sm" aria-label="追加钱包数量" className="w-20" value={deriveN} onChange={(e) => setDeriveN(Math.max(1, Number(e.target.value) || 1))} />
+            <Button size="sm" icon={PlusIcon} loading={busy} onClick={() => run(() => deriveMore(account.slug, deriveN))}>追加派生钱包</Button>
           </div>
         ) : importing ? (
           <div className="flex flex-col gap-2">
-            <InputArea size="sm" aria-label="Private keys to import" placeholder="0x… — one key per line" rows={2} spellCheck={false} autoComplete="off" value={keys} onChange={(e) => setKeys(e.target.value)} />
+            <InputArea size="sm" aria-label="待导入的私钥" placeholder="0x…，每行一个私钥" rows={2} spellCheck={false} autoComplete="off" value={keys} onChange={(e) => setKeys(e.target.value)} />
             <QrKeyScanner onKey={(k) => setKeys((p) => (p.trim() ? `${p.trim()}\n` : "") + k)} />
             <div className="flex gap-2">
-              <Button size="sm" variant="primary" disabled={busy || splitKeys(keys).length === 0} onClick={() => run(() => importKeys(account.slug, splitKeys(keys)), () => { setImporting(false); setKeys(""); })}>Import</Button>
-              <Button size="sm" variant="ghost" onClick={() => { setImporting(false); setKeys(""); }}>Cancel</Button>
+              <Button size="sm" variant="primary" disabled={busy || splitKeys(keys).length === 0} onClick={() => run(() => importKeys(account.slug, splitKeys(keys)), () => { setImporting(false); setKeys(""); })}>导入</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setImporting(false); setKeys(""); }}>取消</Button>
             </div>
           </div>
         ) : (
-          <div><Button size="sm" icon={KeyIcon} disabled={busy} onClick={() => setImporting(true)}>Import keys</Button></div>
+          <div><Button size="sm" icon={KeyIcon} disabled={busy} onClick={() => setImporting(true)}>导入私钥</Button></div>
         )}
         {msg && <Banner variant="error" size="sm" icon={<WarningCircleIcon weight="fill" />} description={msg} />}
       </LayerCard.Primary>

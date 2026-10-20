@@ -15,7 +15,7 @@ export function CohortFilmstrip({ wallets, selectedId, onSelect }: {
   if (active.length === 0) return null;
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-kumo-line px-4 py-2">
-      <span className="shrink-0 text-sm text-kumo-subtle">Active · {active.length}</span>
+      <span className="shrink-0 text-sm text-kumo-subtle">活跃钱包 · {active.length}</span>
       <div className="flex gap-2 overflow-x-auto">
         {active.map((w) => {
           const sel = selectedId === w.id;

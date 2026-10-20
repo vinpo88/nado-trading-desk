@@ -8,6 +8,7 @@ import { LIVE_COHORT } from "../lib/live";
 import { fundCohortLive, DEFAULT_REFUEL_ETH, DEFAULT_MINT_USDT0, DEFAULT_DEPOSIT_USDT0, TREASURY_WALLET_ID } from "../lib/liveContext";
 import type { FundProgress } from "../lib/liveContext";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { zhError, zhLabel } from "../lib/zh";
 
 type LogLine = { ok: boolean; text: string };
 
@@ -42,16 +43,16 @@ export function FundingPanel({ wallets, onFunded }: { wallets: WalletVM[]; onFun
       const res = await fundCohortLive(ids, {
         gasEach, mintEach, depositEach, signal: ac.signal,
         onProgress: (p: FundProgress) => {
-          append(p.status === "ok", `${p.walletId} · ${p.phase}${p.error ? ` — ${p.error}` : ""}${p.tx ? ` · ${p.tx.slice(0, 10)}…` : ""}`);
+          append(p.status === "ok", `${p.walletId} · ${zhLabel(p.phase)}${p.error ? ` — ${zhError(p.error)}` : ""}${p.tx ? ` · ${p.tx.slice(0, 10)}…` : ""}`);
           // Drop a fully-funded wallet from future targets at once (don't wait for the readiness reconcile),
           // so an immediate re-run can't double-deposit it. A FAILED wallet stays targetable for a retry.
           if (p.phase === "done" && p.status === "ok") setDoneIds((s) => new Set(s).add(p.walletId));
         },
       });
-      setSummary(`done — funded ${res.funded}, failed ${res.failed}, skipped ${res.skipped}`);
+      setSummary(`已完成：入金成功 ${res.funded} 个，失败 ${res.failed} 个，跳过 ${res.skipped} 个`);
       onFunded?.(ids); // repaint the attempted wallets + treasury (native/collateral/readiness)
     } catch (e) {
-      setSummary(`✗ ${(e as Error).message}`); // the "✗ " prefix is part of the cap-reject e2e contract
+      setSummary(`✗ ${zhError(e)}`); // the "✗ " prefix is part of the cap-reject e2e contract
     } finally {
       setBusy(false);
       abortRef.current = null;
@@ -64,21 +65,21 @@ export function FundingPanel({ wallets, onFunded }: { wallets: WalletVM[]; onFun
           sidebar it would otherwise shrink to 0 min-height and clip its own controls (unclickable)
           instead of letting the sidebar scroll. */}
       <LayerCard className="shrink-0">
-        <LayerCard.Secondary>Fund cohort (testnet)</LayerCard.Secondary>
+        <LayerCard.Secondary>批量入金（测试网）</LayerCard.Secondary>
         <LayerCard.Primary className="flex flex-col gap-3">
           <Text variant="secondary" size="xs">
-            {targets.length} unfunded live wallet(s) — gas → mint → deposit from the treasury ({TREASURY_WALLET_ID}).
+            {targets.length} 个未入金的在线钱包，由资金钱包（{TREASURY_WALLET_ID}）依次补充手续费、领取测试币并充值。
           </Text>
           <div className="flex flex-col gap-2">
-            <Input size="sm" label="Gas ETH" value={gasEach} onChange={(e) => setGasEach(e.target.value)} />
-            <Input size="sm" label="Mint USDT0" value={mintEach} onChange={(e) => setMintEach(e.target.value)} />
-            <Input size="sm" label="Deposit USDT0" value={depositEach} onChange={(e) => setDepositEach(e.target.value)} />
+            <Input size="sm" label="手续费 ETH" value={gasEach} onChange={(e) => setGasEach(e.target.value)} />
+            <Input size="sm" label="领取测试币 USDT0" value={mintEach} onChange={(e) => setMintEach(e.target.value)} />
+            <Input size="sm" label="充值 USDT0" value={depositEach} onChange={(e) => setDepositEach(e.target.value)} />
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" disabled={busy || targets.length === 0} onClick={() => setConfirm(true)}>
-              Fund {targets.length} wallet{targets.length === 1 ? "" : "s"}
+              为 {targets.length} 个钱包入金
             </Button>
-            {busy && <Button variant="secondary-destructive" icon={StopIcon} onClick={() => abortRef.current?.abort()}>Stop</Button>}
+            {busy && <Button variant="secondary-destructive" icon={StopIcon} onClick={() => abortRef.current?.abort()}>停止</Button>}
           </div>
           {summary && (summary.startsWith("✗")
             ? <Banner variant="error" size="sm" icon={<XCircleIcon weight="fill" />} description={summary} />
@@ -94,16 +95,16 @@ export function FundingPanel({ wallets, onFunded }: { wallets: WalletVM[]; onFun
             </ul>
           )}
           <Text variant="secondary" size="xs">
-            Bulk testnet on-ramp: each unfunded wallet is refueled (if low), minted USDT0 (if short), then approve+deposit — all signed in this tab. depositCollateral is not idempotent, so already-funded wallets (readiness ≠ unfunded) are not targeted.
+            测试网批量入金：为余额不足的钱包补充手续费和 USDT0，再授权并充值，全部在此标签页签名。重复充值会再次扣款，因此会跳过已入金的钱包。
           </Text>
         </LayerCard.Primary>
       </LayerCard>
 
       <ConfirmDialog
         open={confirm}
-        title="Fund cohort (on-chain testnet)"
-        body={<>Fund <strong className="font-medium text-kumo-default">{targets.length}</strong> unfunded live wallet{targets.length === 1 ? "" : "s"} from the treasury (<strong className="font-medium text-kumo-default">{TREASURY_WALLET_ID}</strong>): refuel <strong className="font-medium text-kumo-default">{gasEach} ETH</strong> (if low) + mint <strong className="font-medium text-kumo-default">{mintEach} USDT0</strong> (if short) + deposit <strong className="font-medium text-kumo-default">{depositEach} USDT0</strong> each — real testnet transactions, signed in this tab.</>}
-        danger={<>Real testnet funds move across {targets.length} wallet(s). The key never leaves your browser.</>}
+        title="批量入金（测试网链上交易）"
+        body={<>从资金钱包（<strong className="font-medium text-kumo-default">{TREASURY_WALLET_ID}</strong>）为 <strong className="font-medium text-kumo-default">{targets.length}</strong> 个未入金钱包操作：每个钱包在余额不足时补充 <strong className="font-medium text-kumo-default">{gasEach} ETH</strong>、领取 <strong className="font-medium text-kumo-default">{mintEach} USDT0</strong>，然后充值 <strong className="font-medium text-kumo-default">{depositEach} USDT0</strong>。这是实际测试网交易，在此标签页签名。</>}
+        danger={<>将操作 {targets.length} 个钱包的实际测试网资金。密钥保留在浏览器内。</>}
         onConfirm={() => { setConfirm(false); void run(); }}
         onCancel={() => setConfirm(false)}
       />

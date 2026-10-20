@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
  *  overridden — via Kumo's own cn() merge — with Kumo's brand token (re-pointed per network in
  *  globals.css) and Kumo's inverse text; the derived brand shades keep that text >= ~4.5:1. */
 export function AccountKindBadge({ kind, children }: { kind: string; children: ReactNode }) {
-  if (kind === "HD") return <Badge variant="secondary">{children}</Badge>;
-  return <Badge variant="primary" className="bg-kumo-brand text-kumo-inverse">{children}</Badge>;
+  const content = <span title={kind === "HD" ? "助记词派生账户" : "私钥导入账户"}>{children}</span>;
+  if (kind === "HD") return <Badge variant="secondary">{content}</Badge>;
+  return <Badge variant="primary" className="bg-kumo-brand text-kumo-inverse">{content}</Badge>;
 }
