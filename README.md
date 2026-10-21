@@ -120,16 +120,18 @@ WalletConnect 连接码含临时配对材料，不写入日志、Git 或交接�
 2. 双击 **`Start-Registration.cmd`**。后台 Node 进程启动专用浏览器，等待你自行恢复加密备份、输入密码解锁并核对钱包。已在这个配置恢复过时只需解锁。不要将密码写进配置；Windows 入口在缺少配置时会复制示例，但不会替你选择历史进度。
 3. 首次没有 `walletsPath` 文件时，程序在同一浏览器中点击 `/connect` 的“导出编号与地址清单”，验证公开 JSON 后创建 `private-data/wallets.json`，随后继续执行。已有文件不会被自动覆盖。旧版页面缺少该按钮时停在 `waiting_manifest_export`，应更新本地服务。
 4. 若仅想先恢复和核对保险库，可用 **`Open-Registration.cmd`** 的准备模式；它不会注册或签名。准备完用 **`Stop-Registration.cmd`** 关闭，再启动正式执行器并自行解锁。
-5. 首次遇到条款时，程序等待本次运行的明确确认。检查官网弹窗及链接，用下面的 `status` 查看候选摘要；阅读候选文件并确认后，执行带实际摘要值的 `accept-terms` 命令。文档和示例不预先批准条款。
+5. 默认首次遇到条款时，程序等待本次运行的明确确认。检查官网弹窗及链接，用下面的 `status` 查看候选摘要；阅读候选文件并确认后，执行带实际摘要值的 `accept-terms` 命令。文档和示例不预先批准条款。
 
 ```powershell
 node scripts/registration/worker.mjs status --config registration.worker.local.json
 node scripts/registration/worker.mjs accept-terms --config registration.worker.local.json --digest <本次候选的SHA256>
 ```
 
-确认后，同一进程按该候选核对后续弹窗的六项声明与链接；变化则停止。这个比对不等于监测链接所指法律文档的全文版本，操作者应在确认时阅读链接内容。每次重新启动是新的运行，需解锁和确认本次候选；自动解锁不代表同意条款。
+确认后，同一进程按该候选核对后续弹窗的六项声明与链接；变化则停止。这个比对不等于监测链接所指法律文档的全文版本，操作者应在确认时阅读链接内容。每次重新启动是新的运行，默认需解锁和确认本次候选；自动解锁不代表同意条款。
 
-执行器等待页面状态和按钮就绪，不设每个钱包固定长时间休眠；网站响应、连接中继、姓名可用性检查和签名仍需要时间。用户名冲突仅在官网明确提示占用时处理：在 `ybtl` 字母之间插入随机数字，保留钱包编号，并同步本地一次授权的完整用户名。
+若操作者已批准同一内容在后续运行中继续使用，可在对应 worker JSON 中添加 `"approvedTermsDigest": "<已核对候选的 contentDigest>"`。该值必须是 `terms-candidate.json` 的 **`contentDigest`**（64 位小写十六进制 SHA256），不要使用随运行变化的 `digest`。程序每次仍读取、校验当前六项声明和条款／隐私链接，只有内容摘要完全匹配才通过当前运行校验生成新的确认；内容变化或未配置时继续等待 `accept-terms`。旧运行确认文件不能直接复用，保存意图与点击同意前的实时核验保持有效。删除此配置字段即可恢复每次运行手动确认。
+
+执行器等待页面状态和按钮就绪，不设每个钱包固定长时间休眠；网站响应、连接中继、姓名可用性检查和签名仍需要时间。用户名冲突仅在官网明确提示占用时处理：在 `demo` 字母之间插入随机数字，保留钱包编号，并同步本地一次授权的完整用户名。
 
 | 操作 | Windows 入口 | 命令 |
 | --- | --- | --- |
@@ -159,7 +161,7 @@ node scripts/registration/worker.mjs resume-connection --config registration.wor
 
 该命令只让原进程中的这个成员恢复同一钱包，继续使用原调度器，不创建新进程或关闭另一成员。它核对本次运行、成员、钱包和暂停编号，并再次检查磁盘保存意图；每个命令只消费一次。恢复仅在可核验的配对页面上重新进入官网，确认已退出后获取新连接码，再走原来的来源、Ink、条款及用户名审核。来源拒绝、未知原因、钱包变化、已有 Save、仍有签名授权或官网出现未知页面时均不能恢复。失败仍停下检查，不自动循环。
 
-**已运行的旧进程不能通过拉取代码获得这个入口。** 若状态没有 `canResumeConnection: true`，不能编辑状态文件、移除运行锁或另起进程强行恢复。需要在允许正常停止现有组时加载新版；如另一成员必须持续运行，应先保留它，等正常完成或另行安排重启。Edge 与 Chrome 始终使用同一份 runner 和恢复规则。
+**已运行的旧进程不能通过拉取代码获得这个入口。** 若状态没有 `canResumeConnection: true`，不能编辑状态文件、移除运行锁或另起进程强行恢复。提供 `memberRestartSupported: true` 的新版组还可使用下文的单成员重启命令；旧组需要正常停止后加载新版。Edge 与 Chrome 始终使用同一份 runner 和恢复规则。
 
 浏览器重启后，官网可能保留旧条款弹窗，而本地连接已经断开。仅在本地未授权、没有保存意图的情况下，程序关闭这个弹窗，确认官网退出后重新连接待处理的钱包。连接后的页面若短暂显示上一个钱包，会继续等待正确地址，不把旧账户计为当前钱包成功。
 官网显示默认名称 `Account 1` 时，不能当成已完成命名。重启恢复时会先退出这个旧会话，再为待处理钱包重新连接和核验。
@@ -182,17 +184,17 @@ node scripts/registration/local-credentials-cli.mjs store --name registration-va
 
 启动时只会向配置的本地 `/connect` 页中唯一的“解锁保险库”表单填写一次；不会创建新保险库、覆盖备份或处理官网凭据。解密失败、页面不符或密码不匹配时保留窗口，回到手动解锁。移除 `autoUnlockCredential` 字段即可关闭自动解锁；不会因此修改保险库密码。连接恢复仍遵守上节的核验规则，未确认的保存结果不会因有密码而重试。
 
-### Edge 和 Chrome 同时执行
+### 多浏览器同时执行（2–6 个）
 
-并发组在同一个 Node 进程中管理两个独立浏览器。各自保管保险库、登录会话、进度和保存意图；共用调度器协调窗口焦点。连接码的复制、读取、填入及清空是一段不可交叉的操作，网络和页面处理可分别推进。不要在运行期间手动输入或复制其他内容；并发不保证速度翻倍。
+并发组在同一个 Node 进程中管理 **2–6 个独立浏览器**，支持多个 Edge 或 Chrome 实例。各自保管保险库、登录会话、进度和保存意图；共用调度器协调窗口焦点。连接码的复制、读取、填入及清空是一段不可交叉的操作，网络和页面处理可分别推进。不要在运行期间手动输入或复制其他内容；增加浏览器数不保证按比例提速。
 
 1. 先停止旧执行器，等待当前钱包完成、记录落盘并关闭专用窗口。保留历史记录和所有 `attempt.json`。
 2. 新安装可复制 `registration.worker.edge.example.json` 为 `registration.worker.local.json`，复制 `registration.worker.chrome.example.json` 为 `registration.worker.chrome.local.json`。**已有配置请就地修改，保留历史路径，不能覆盖。** 两个例子分别为 **Edge 1–2499 升序**、**Chrome 2500–10000 升序**；实际范围和方向由操作者明确设置，程序拒绝重叠范围。
-3. 复制 `registration.group.example.json` 为 `registration.group.local.json`。确认同一份 `private-data/wallets.json` 已从本地页面导出，两个配置使用不同的 `profileName` 和 `progressPath`。组启动前合并校验所有成员声明的公开历史，已核验的钱包不会重复处理。
-4. 双击 `Start-Registration-Parallel.cmd`。在两个专用浏览器各自恢复加密备份并自行解锁。程序等待两个浏览器都解锁后开始，等待时不会反复抢夺输入焦点。Chrome 的钱包恢复属于独立配置，不会自动复制 Edge 的浏览器数据。
-5. 逐个核对本次条款候选，使用上一节 `worker.mjs accept-terms` 命令，分别指定 Edge / Chrome 的配置及各自候选摘要。确认文件不能从旧进程或其他操作者复制使用。
+3. 复制 `registration.group.example.json` 为 `registration.group.local.json`。确认同一份 `private-data/wallets.json` 已从本地页面导出，每个配置使用不同的 `profileName` 和 `progressPath`。需要更多实例时，为每个新增成员准备独立 worker 配置，在组文件的 `workerConfigs` 中明确列出全部 2–6 个配置文件，并分配互不重叠的钱包范围；同一浏览器的多个实例也不能共用配置目录。组启动前合并校验所有成员声明的公开历史，已核验的钱包不会重复处理。
+4. 双击 `Start-Registration-Parallel.cmd`。在各个专用浏览器各自恢复加密备份并自行解锁。程序等待所有浏览器都解锁后开始，等待时不会反复抢夺输入焦点。新增实例的钱包恢复属于独立配置，不会自动复制其他浏览器的数据。
+5. 未配置已批准内容摘要的成员需逐个核对本次条款候选，使用上一节 `worker.mjs accept-terms` 命令，分别指定各成员配置及各自候选摘要。`approvedTermsDigest` 仅对内容一致的已批准条款生效；确认文件不能从旧进程或其他操作者复制使用。
 
-`Registration-Parallel-Status.cmd` 查看两边进度；`Stop-Registration-Parallel.cmd` 让两边各自完成当前钱包并保存后停止。跨平台对应：
+`Registration-Parallel-Status.cmd` 查看全部成员进度；`Stop-Registration-Parallel.cmd` 让每个成员完成当前钱包并保存后停止。跨平台对应：
 
 ```sh
 node scripts/registration/group.mjs start --config registration.group.local.json
@@ -200,9 +202,23 @@ node scripts/registration/group.mjs status --config registration.group.local.jso
 node scripts/registration/group.mjs stop --config registration.group.local.json
 ```
 
-组运行期间不可另起单浏览器执行器。调整范围前停止整个组，重新核对历史；未完成的保存意图必须仍属于对应浏览器的下一个待处理钱包。异常断电后的组锁使用 `group.mjs recover-locks --config registration.group.local.json --confirm-closed`，前提是确认该组所有专用浏览器已经关闭，所有相关进程已退出。
+组状态提供 `memberRestartSupported: true` 时，可以只重启一个成员。先查看该成员当前的 `runId`，再提交绑定本次运行的命令：
 
-测试包含真实 Edge 与 Chrome 的隔离并发流程：所有网页请求由模拟站点响应，模拟共享剪贴板并核对每个连接码、地址及用户名。这验证了调度和隔离逻辑，不代表真实官网已完成全量注册。
+```powershell
+node scripts/registration/group.mjs restart-worker --config registration.group.local.json --profile registration-edge --expected-run-id <该成员当前runId>
+```
+
+命令由原组进程处理：目标成员完成当前钱包并落盘，关闭自己的专用浏览器，重新读取自己的进度，然后用新的成员 `runId` 续跑；其他成员保持原运行和共享调度器。旧停止命令、连接恢复请求及条款确认不会用于新一轮运行。请求接受后仍需查看状态，确认目标成员更换 `runId` 并继续推进；不能把“请求已接受”当成“恢复成功”。
+
+存在未决保存意图、条款待确认、保险库待解锁或无法确认浏览器已关闭时，不会强制重开。整个组的停止请求优先于单成员重启。旧组进程不会热加载这个功能，首次升级需要正常停止并重新启动组。
+
+组运行期间不可另起单浏览器执行器。调整范围前停止整个组，重新核对历史；通常未完成的保存意图必须仍属于对应浏览器的下一个待处理钱包。异常断电后的组锁使用 `group.mjs recover-locks --config registration.group.local.json --confirm-closed`，前提是确认该组所有专用浏览器已经关闭，所有相关进程已退出。
+
+需要处理多个不连续区间时，可用 `"ranges": [[1, 3], [7, 9]]` 替代 `start/end`；各段必须按 `direction` 排列且互不重叠，分片偏移跨段累计，已验证历史不会改变归属。
+
+只有操作者明确决定将某笔保存结果留待核验、先处理其他钱包时，才可在其原 profile 配置 `deferredAttemptWalletNumber`。原 `attempt.json` 保持原样，新钱包使用 `active-attempt.json`；所有计划禁止包含延期编号，启动和重启会检查本仓库所有 profile 的保存记录，防止把它交给另一浏览器重做。延期记录缺失、内容变化或移除该配置却遗留活动保存记录时，程序拒绝继续。各成员当前计划完成不代表延期钱包完成；最终核验必须包含这些钱包，不可删除记录或伪造成功。
+
+测试包含六成员的配置边界、共享调度、独立进度与停止流程，以及真实 Edge 与 Chrome 的隔离并发流程：所有网页请求由模拟站点响应，模拟共享剪贴板并核对每个连接码、地址及用户名。这验证了调度和隔离逻辑，不代表真实官网已完成六浏览器或全量注册实测。
 
 ## 倒序计划与断点续接
 
@@ -221,7 +237,7 @@ node scripts/registration/group.mjs stop --config registration.group.local.json
 
 `laneIndex` 从 **0** 开始。钱包编号是 `/connect` 中从 1 开始的全局顺序，不是 HD 派生索引。在该页面点击“导出编号与地址清单”，将下载的 `wallet-manifest.json` 复制为 `private-data/wallets.json`。文件自动包含全部钱包的 `walletNumber` 和 `address`，无需手写 JSON 或转换地址 TXT。保留导出的编号和顺序，并与恢复后页面核对；不要把备份文件或私钥传给计划器。
 
-配置示例使用 `.local/` 保存本地清单和进度，`usernamePrefix` 默认为 `ybtl`，例如第 10000 个钱包的默认用户名是 `ybtl10000`。可以修改前缀或显式提供用户名规则；官网名称必须与本地一次授权的完整名称一致。计划器 CLI 会将配置中的路径相对于配置文件所在目录解析，命令行路径参数相对于当前工作目录。
+配置示例使用 `.local/` 保存本地清单和进度，`usernamePrefix` 默认为 `demo`，例如第 10000 个钱包的默认用户名是 `demo10000`。可以修改前缀或显式提供用户名规则；官网名称必须与本地一次授权的完整名称一致。计划器 CLI 会将配置中的路径相对于配置文件所在目录解析，命令行路径参数相对于当前工作目录。
 
 以下示例改用操作者自行准备的 `private-data/` 文件。首次运行应显式创建一个**新的空 NDJSON 文件**，或将本地配置中的 `progressPaths` 设为 `[]` 并省略 `--progress`。配置指向的文件不存在会停止，不能为了重新运行而清空已有进度。
 

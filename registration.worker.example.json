@@ -11,7 +11,7 @@
   "walletsPath": "private-data/wallets.json",
   "progressPath": ".local/registration-progress.ndjson",
   "progressPaths": [],
-  "usernamePrefix": "ybtl",
+  "usernamePrefix": "demo",
   "timeoutMs": 20000,
   "pollIntervalMs": 1000,
   "maxUsernameCandidates": 5

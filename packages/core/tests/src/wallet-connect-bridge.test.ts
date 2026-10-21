@@ -86,7 +86,7 @@ async function fixture() {
 describe("WalletConnect authentication fallback without added signing authority", () => {
   it("leaves authentication unhandled and requires explicit approval of the ordinary verified proposal", async () => {
     const f = await fixture();
-    f.bridge.setUsernameAuthorization("ybtl2");
+    f.bridge.setUsernameAuthorization("demo2");
     expect(f.listeners.get("session_authenticate")?.size ?? 0).toBe(0);
     f.emit("session_authenticate", { id: 8, topic: "synthetic-pairing", params: {} });
     expect(f.bridge.getSnapshot().status).toBe("connecting");

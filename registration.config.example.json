@@ -8,6 +8,6 @@
   "walletsPath": ".local/registration-wallets.json",
   "progressPaths": [".local/registration-progress.ndjson"],
   "progressPath": ".local/registration-progress.ndjson",
-  "usernamePrefix": "ybtl",
+  "usernamePrefix": "demo",
   "browser": "iab"
 }

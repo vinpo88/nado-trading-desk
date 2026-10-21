@@ -2,7 +2,7 @@
 export const DEFAULT_BOUNDS = Object.freeze({ min: 1, max: 10000 });
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const USERNAME = /^[A-Za-z0-9_.]{3,20}$/;
-const CONFIG_KEYS = new Set(['bounds', 'start', 'end', 'direction', 'laneCount', 'laneIndex']);
+const CONFIG_KEYS = new Set(['bounds', 'start', 'end', 'ranges', 'direction', 'laneCount', 'laneIndex']);
 const RECORD_KEYS = new Set([
   'formatVersion', 'checkedAt', 'walletNumber', 'address', 'username', 'status', 'loginComplete',
   'websiteSignedIn', 'websiteNetwork', 'approvedChainId', 'usernameAutoSigned',
@@ -31,11 +31,29 @@ export function normalizeConfig(input = {}) {
   const max = integer(bounds.max ?? 10000, min, 1000000, 'bounds.max');
   const direction = input.direction ?? 'desc';
   if (direction !== 'desc' && direction !== 'asc') throw new Error('direction 只能是 desc 或 asc');
+  const laneCount = integer(input.laneCount ?? 1, 1, 10000, 'laneCount');
+  const laneIndex = integer(input.laneIndex ?? 0, 0, laneCount - 1, 'laneIndex');
+  if (Object.hasOwn(input, 'ranges')) {
+    if (Object.hasOwn(input, 'start') || Object.hasOwn(input, 'end')) throw new Error('ranges 不得与 start/end 同时配置');
+    if (!Array.isArray(input.ranges) || !input.ranges.length || input.ranges.length > 1000000) throw new Error('ranges 必须是非空编号区间数组');
+    const ranges = Array.from(input.ranges, (range, index) => {
+      if (!Array.isArray(range) || range.length !== 2) throw new Error('每个 ranges 区间必须是 [start,end]');
+      const start = integer(range[0], min, max, `ranges[${index}].start`);
+      const end = integer(range[1], min, max, `ranges[${index}].end`);
+      if ((direction === 'desc' && start < end) || (direction === 'asc' && start > end)) throw new Error('区间起止编号与方向不一致');
+      return [start, end];
+    });
+    for (let index = 1; index < ranges.length; index++) {
+      const previousEnd = ranges[index - 1][1], nextStart = ranges[index][0];
+      if (direction === 'asc' ? nextStart <= previousEnd : nextStart >= previousEnd) {
+        throw new Error('ranges 必须按方向排列且不得重叠');
+      }
+    }
+    return { bounds: { min, max }, ranges, direction, laneCount, laneIndex };
+  }
   const start = integer(input.start ?? (direction === 'desc' ? max : min), min, max, 'start');
   const end = integer(input.end ?? (direction === 'desc' ? min : max), min, max, 'end');
   if ((direction === 'desc' && start < end) || (direction === 'asc' && start > end)) throw new Error('起止编号与方向不一致');
-  const laneCount = integer(input.laneCount ?? 1, 1, 10000, 'laneCount');
-  const laneIndex = integer(input.laneIndex ?? 0, 0, laneCount - 1, 'laneIndex');
   return { bounds: { min, max }, start, end, direction, laneCount, laneIndex };
 }
 
@@ -132,17 +150,20 @@ export function createPlan(input = {}, manifest, records = []) {
   const addresses = new Map(wallets.map(wallet => [wallet.walletNumber, wallet.address]));
   const done = new Set(mergeProgress([records], wallets).filter(isVerified).map(record => record.walletNumber));
   const step = config.direction === 'desc' ? -1 : 1;
-  const count = Math.abs(config.end - config.start) + 1;
   const items = [];
-  let total = 0; let completed = 0;
-  for (let offset = 0; offset < count; offset++) {
-    const walletNumber = config.start + offset * step;
-    if (!addresses.has(walletNumber)) throw new Error(`公开地址清单缺少计划范围内的编号 ${walletNumber}`);
-    // Shard before skipping completed items. Progress must never reshuffle lane ownership.
-    if (offset % config.laneCount !== config.laneIndex) continue;
-    total++;
-    if (done.has(walletNumber)) { completed++; continue; }
-    items.push({ walletNumber, address: addresses.get(walletNumber) });
+  let total = 0; let completed = 0; let offset = 0;
+  for (const [start, end] of config.ranges ?? [[config.start, config.end]]) {
+    const count = Math.abs(end - start) + 1;
+    for (let rangeOffset = 0; rangeOffset < count; rangeOffset++, offset++) {
+      const walletNumber = start + rangeOffset * step;
+      if (!addresses.has(walletNumber)) throw new Error(`公开地址清单缺少计划范围内的编号 ${walletNumber}`);
+      // Count across ranges and shard before skipping completed items. Neither
+      // gaps nor verified progress may reshuffle a wallet's lane ownership.
+      if (offset % config.laneCount !== config.laneIndex) continue;
+      total++;
+      if (done.has(walletNumber)) { completed++; continue; }
+      items.push({ walletNumber, address: addresses.get(walletNumber) });
+    }
   }
   return { config, total, completed, remaining: items.length, items };
 }

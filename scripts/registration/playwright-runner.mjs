@@ -105,7 +105,7 @@ function inspectWebsiteDOM({ waitFor = null, expectedShortAddress = null, expect
  * tracing/video, owns the dedicated profile, and persists returned records.
  */
 export function createPlaywrightNadoRunner({
-  localPage, nadoPage, walletManifest, usernameForWallet = number => 'ybtl' + number,
+  localPage, nadoPage, walletManifest, usernameForWallet = number => 'demo' + number,
   termsConfirmation, signal, onEvent = () => {}, timeoutMs = 20000,
   maxUsernameCandidates = 5, resumeAttempt, withUi = operation => operation(),
 }) {
@@ -198,8 +198,10 @@ export function createPlaywrightNadoRunner({
         failure.uiState = await observeFailure(error);
         // Capture eligibility before cleanup changes the visible authorization.
         // Recovery never turns a previously armed or uncertain operation safe.
-        const candidate = !recovering && failure.code === 'NEEDS_ATTENTION'
-          ? await captureConnectionRecovery() : null;
+        const recovery = !recovering && failure.code === 'NEEDS_ATTENTION'
+          ? await captureConnectionRecovery() : {};
+        const candidate = recovery.candidate;
+        if (recovery.blocker) failure.uiState = sanitizeUiObservation({ ...failure.uiState, recoveryBlocker: recovery.blocker });
         current = null;
         failure.retainedBrowserSafe = await cleanup() === true;
         if (candidate && failure.retainedBrowserSafe && !signal?.aborted) {
@@ -264,41 +266,50 @@ export function createPlaywrightNadoRunner({
     const initializing = await localCall(() => receive.getAttribute('aria-busy')) === 'true';
     return {
       blocked: active > 0 || initializing || alerts.length > 1,
+      activeRequest: active > 0, initializing,
       alertCount: alerts.length,
       reason: alerts.length === 1 ? CONNECTION_FAILURES.get(alerts[0].trim()) : undefined,
     };
   }
-  async function checkRecoveryState(candidate, { beforeCleanup = false, expectedSite = 'pairing' } = {}) {
+  async function checkRecoveryState(candidate, { beforeCleanup = false, expectedSite = 'pairing', onBlock = () => {} } = {}) {
+    // Classify only the checks already required for recovery. Diagnostic
+    // reporting must not add UI reads, retry an action, or relax any condition.
+    const reject = blocker => { onBlock(blocker); fail('NEEDS_ATTENTION'); };
     guard();
     if (!candidate || !addresses.has(candidate.number) || addresses.get(candidate.number) !== candidate.address
       || !validName(candidate.base) || usernameForWallet(candidate.number) !== candidate.base
-      || saveAttempts.size) fail('NEEDS_ATTENTION');
+      || saveAttempts.size) reject(saveAttempts.size ? 'save_intent' : 'state_changed');
     const local = await localState();
     if (local.number !== String(candidate.number) || local.address !== candidate.address
       || local.username !== candidate.base || local.authorized
-      || !(beforeCleanup ? ['已断开连接'] : ['尚未连接', '已断开连接']).includes(local.status)) fail('NEEDS_ATTENTION');
+      || !(beforeCleanup ? ['已断开连接'] : ['尚未连接', '已断开连接']).includes(local.status)) {
+      reject(local.authorized ? 'authorization_armed' : 'state_changed');
+    }
     const panel = await connectionPanelState();
     if (panel.blocked || (beforeCleanup && panel.alertCount !== 1)
-      || (panel.alertCount && panel.reason !== candidate.reason)) fail('NEEDS_ATTENTION');
+      || (panel.alertCount && panel.reason !== candidate.reason)) {
+      reject(panel.activeRequest ? 'active_request' : panel.initializing ? 'local_busy' : 'state_changed');
+    }
     const website = await site();
-    if (website.stage !== expectedSite || website.profile
-      || await nadoCall(() => nadoPage.locator(
-        '[role="alert"]:visible:not(#__next-route-announcer__), iframe:visible',
-      ).count())) fail('NEEDS_ATTENTION');
+    if (website.stage !== expectedSite || website.profile) reject(website.profile ? 'site_profile' : 'state_changed');
+    if (await nadoCall(() => nadoPage.locator(
+      '[role="alert"]:visible:not(#__next-route-announcer__), iframe:visible',
+    ).count())) reject('site_alert_or_frame');
   }
   async function captureConnectionRecovery() {
+    let blocker = 'inspection_failed';
     try {
       return await withUi(async () => {
         const panel = await connectionPanelState();
-        if (!panel.reason) return null;
+        if (!panel.reason) return { blocker: 'failure_unconfirmed' };
         const candidate = Object.freeze({
           number: activeNumber, address: addresses.get(activeNumber),
           base: usernameForWallet(activeNumber), reason: panel.reason,
         });
-        await checkRecoveryState(candidate, { beforeCleanup: true });
-        return candidate;
+        await checkRecoveryState(candidate, { beforeCleanup: true, onBlock: value => { blocker = value; } });
+        return { candidate };
       });
-    } catch { return null; }
+    } catch { return { blocker }; }
   }
   async function recoverConnectionImpl(number) {
     // Every invocation consumes the candidate, including wrong-number calls and

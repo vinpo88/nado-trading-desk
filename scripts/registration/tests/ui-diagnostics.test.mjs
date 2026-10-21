@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeUiObservation } from '../ui-diagnostics.mjs';
+import { publicWorkerState } from '../group.mjs';
 
 test('preserves every explicitly allowed classification', () => {
   const fields = {
@@ -15,6 +16,10 @@ test('preserves every explicitly allowed classification', () => {
     ],
     fault: ['ui_timeout', 'ui_state', 'origin_mismatch', 'aborted'],
     disconnectReason: ['pair_timeout', 'pair_failed', 'proposal_expired', 'unknown'],
+    recoveryBlocker: [
+      'local_busy', 'active_request', 'site_alert_or_frame', 'site_profile',
+      'save_intent', 'state_changed', 'failure_unconfirmed', 'authorization_armed', 'inspection_failed',
+    ],
   };
   for (const [key, values] of Object.entries(fields)) {
     for (const value of values) assert.deepEqual(sanitizeUiObservation({ [key]: value }), { [key]: value });
@@ -35,6 +40,19 @@ test('preserves only exact booleans, including false', () => {
   }
 });
 
+test('public group status carries only the allowlisted recovery blocker', () => {
+  assert.deepEqual(publicWorkerState({
+    phase: 'waiting_attention', canResumeConnection: false,
+    uiState: { recoveryBlocker: 'local_busy', disconnectReason: 'pair_failed', message: 'PRIVATE_SENTINEL' },
+  }), {
+    phase: 'waiting_attention', canResumeConnection: false,
+    uiState: { disconnectReason: 'pair_failed', recoveryBlocker: 'local_busy' },
+  });
+  assert.deepEqual(publicWorkerState({
+    phase: 'waiting_attention', uiState: { recoveryBlocker: 'PRIVATE_SENTINEL' },
+  }), { phase: 'waiting_attention' });
+});
+
 test('discards raw secrets and unknown fields without retaining any nested data', () => {
   const secret = 'SYNTHETIC_PRIVATE_SENTINEL';
   const raw = {
@@ -42,6 +60,7 @@ test('discards raw secrets and unknown fields without retaining any nested data'
     walletMatches: true, authorizationArmed: false,
     uri: `wc:fixture@2?symKey=${secret}`, message: secret,
     stack: secret, password: secret, mnemonic: secret, privateKey: secret,
+    recoveryBlocker: secret,
     address: secret, username: secret, url: `https://example.invalid/${secret}`,
     details: { siteStage: 'terms', raw: secret }, children: [secret],
   };
@@ -57,7 +76,9 @@ test('discards raw secrets and unknown fields without retaining any nested data'
 
 test('unknown enum values and coercible objects are not accepted', () => {
   for (const value of ['PRIVATE_SENTINEL', 'Terms', 'terms ', ' connected', '', 1, true, [], {}, new String('terms')]) {
-    assert.deepEqual(sanitizeUiObservation({ siteStage: value, localStatus: value, fault: value, disconnectReason: value }), {});
+    assert.deepEqual(sanitizeUiObservation({
+      siteStage: value, localStatus: value, fault: value, disconnectReason: value, recoveryBlocker: value,
+    }), {});
   }
   assert.deepEqual(sanitizeUiObservation({ siteStage: 'connected', localStatus: 'terms', fault: 'unknown' }), {});
 });
@@ -75,6 +96,7 @@ test('ignores inherited fields and getters without executing them', () => {
   let getterCalls = 0;
   const raw = Object.create({ localStatus: 'connected', walletMatches: true });
   Object.defineProperty(raw, 'siteStage', { get() { getterCalls++; throw new Error('PRIVATE_SENTINEL'); } });
+  Object.defineProperty(raw, 'recoveryBlocker', { get() { getterCalls++; throw new Error('PRIVATE_SENTINEL'); } });
   Object.defineProperty(raw, 'fault', { value: 'ui_state' });
   assert.deepEqual(sanitizeUiObservation(raw), { fault: 'ui_state' });
   assert.equal(getterCalls, 0);

@@ -35,7 +35,7 @@ test('CLI resolves config paths against config directory and resumes progressPat
 test('merge output round trips; output refuses to overwrite any existing file', async t => {
   const dir = await files(t);
   const another = join(dir, 'second.ndjson'); const output = join(dir, 'merged.ndjson');
-  await writeFile(another, JSON.stringify({ ...done(2), serverProfileVerified: true, intendedUsername: 'ybtl2' }) + '\n');
+  await writeFile(another, JSON.stringify({ ...done(2), serverProfileVerified: true, intendedUsername: 'demo2' }) + '\n');
   const args = ['merge', '--config', join(dir, 'config.json'), '--progress', join(dir, 'progress.ndjson'), '--progress', another, '--output', output];
   await runCli(args);
   const records = parseProgress(await readFile(output, 'utf8'));

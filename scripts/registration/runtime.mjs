@@ -8,9 +8,10 @@ import { parseProgress } from './cli.mjs';
 import { validateTermsConfirmation } from './cua-runner.mjs';
 import { sanitizeUiObservation } from './ui-diagnostics.mjs';
 
-const PLAN_KEYS = ['bounds', 'start', 'end', 'direction', 'laneCount', 'laneIndex'];
+const PLAN_KEYS = ['bounds', 'start', 'end', 'direction', 'laneCount', 'laneIndex', 'ranges'];
 const CONFIG_KEYS = new Set([...PLAN_KEYS, 'walletsPath', 'progressPath', 'progressPaths', 'usernamePrefix',
-  'browser', 'profileName', 'localUrl', 'timeoutMs', 'pollIntervalMs', 'maxUsernameCandidates', 'autoUnlockCredential']);
+  'browser', 'profileName', 'localUrl', 'timeoutMs', 'pollIntervalMs', 'maxUsernameCandidates', 'autoUnlockCredential',
+  'approvedTermsDigest', 'deferredAttemptWalletNumber']);
 const CODES = new Set(['CONFIG_INVALID', 'PUBLIC_FILE_INVALID', 'WORKER_ALREADY_RUNNING', 'WORKER_LOCK_STALE',
   'PROFILE_NOT_DEDICATED', 'STORAGE_ERROR', 'BROWSER_START_FAILED', 'BROWSER_CLOSED', 'VAULT_LOCKED',
   'TERMS_CONFIRMATION_REQUIRED', 'PAIRING_LINK_PENDING', 'ONBOARDING_PENDING', 'CONNECTION_PROPOSAL_PENDING', 'WEBSITE_LOADING_PENDING', 'TERMS_INVALID', 'CONFIRMATION_INVALID', 'NEEDS_ATTENTION', 'ABORTED',
@@ -21,6 +22,7 @@ const RUNNER_STAGES = new Set(['preparing', 'pairing', 'prepared', 'checking_use
   'reading_pairing_link', 'validating_pairing_link', 'filling_pairing_link',
   'sending_connection_request', 'waiting_connection_proposal', 'approving_connection', 'waiting_onboarding', 'resetting_stale_session', 'waiting_website', 'recovering_connection']);
 export const TERMINAL_PHASES = new Set(['completed', 'stopped', 'failed']);
+export const MAX_GROUP_WORKERS = 6;
 export class WorkerError extends Error {
   constructor(code) {
     super(CODES.has(code) ? code : 'RUNNER_FAILED');
@@ -50,6 +52,9 @@ export function normalizeWorkerConfig(raw, { configPath, repoDir }) {
   try {
     if (!object(raw) || Object.keys(raw).some(key => !CONFIG_KEYS.has(key))) fail('CONFIG_INVALID');
     const plan = normalizeConfig(Object.fromEntries(PLAN_KEYS.filter(key => raw[key] !== undefined).map(key => [key, raw[key]])));
+    if (raw.deferredAttemptWalletNumber !== undefined
+      && (!int(raw.deferredAttemptWalletNumber, plan.bounds.min, plan.bounds.max)
+        || plannedNumbers(plan).includes(raw.deferredAttemptWalletNumber))) fail('CONFIG_INVALID');
     const base = dirname(resolve(configPath));
     const browser = raw.browser ?? 'edge';
     const profileName = raw.profileName ?? `registration-${browser}`;
@@ -57,12 +62,14 @@ export function normalizeWorkerConfig(raw, { configPath, repoDir }) {
       || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(profileName)) fail('CONFIG_INVALID');
     if (raw.autoUnlockCredential !== undefined && (typeof raw.autoUnlockCredential !== 'string'
       || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(raw.autoUnlockCredential))) fail('CONFIG_INVALID');
+    if (raw.approvedTermsDigest !== undefined && (typeof raw.approvedTermsDigest !== 'string'
+      || !/^[a-f0-9]{64}$/.test(raw.approvedTermsDigest))) fail('CONFIG_INVALID');
     const localUrl = new URL(raw.localUrl ?? 'http://127.0.0.1:18270/connect');
     if (localUrl.protocol !== 'http:' || localUrl.hostname !== '127.0.0.1' || localUrl.pathname !== '/connect'
       || localUrl.username || localUrl.password || localUrl.hash || localUrl.search) fail('CONFIG_INVALID');
     if (!pathString(raw.walletsPath) || !pathString(raw.progressPath)) fail('CONFIG_INVALID');
     if (raw.progressPaths !== undefined && (!Array.isArray(raw.progressPaths) || raw.progressPaths.some(path => !pathString(path)))) fail('CONFIG_INVALID');
-    const usernamePrefix = raw.usernamePrefix ?? 'ybtl';
+    const usernamePrefix = raw.usernamePrefix ?? 'demo';
     if (typeof usernamePrefix !== 'string' || !/^[A-Za-z][A-Za-z0-9_.]{0,13}$/.test(usernamePrefix)
       || `${usernamePrefix}${plan.bounds.max}`.length > 20) fail('CONFIG_INVALID');
     const timeoutMs = raw.timeoutMs ?? 20000;
@@ -84,12 +91,18 @@ export function normalizeWorkerConfig(raw, { configPath, repoDir }) {
       plan, repoDir: repo, configPath: resolve(configPath), browser, profileName, profileDir, stateDir,
       localUrl: localUrl.href, walletsPath, progressPath, progressPaths, usernamePrefix,
       ...(raw.autoUnlockCredential === undefined ? {} : { autoUnlockCredential: raw.autoUnlockCredential }),
+      ...(raw.approvedTermsDigest === undefined ? {} : { approvedTermsDigest: raw.approvedTermsDigest }),
+      ...(raw.deferredAttemptWalletNumber === undefined ? {} : {
+        deferredAttemptWalletNumber: raw.deferredAttemptWalletNumber,
+        deferredAttemptPath: join(stateDir, 'attempt.json'),
+      }),
       timeoutMs, pollIntervalMs, maxUsernameCandidates,
       globalLockPath: join(tmpdir(), `nado-registration-${owner}`, 'worker.lock'),
       profileLockPath: join(stateDir, 'profile.lock'),
       statusPath: join(stateDir, 'status.json'), stopPath: join(stateDir, 'stop.json'),
       candidatePath: join(stateDir, 'terms-candidate.json'), consentPath: join(stateDir, 'terms-accepted.json'),
-      attemptPath: join(stateDir, 'attempt.json'), resumePath: join(stateDir, 'resume.json'),
+      attemptPath: join(stateDir, raw.deferredAttemptWalletNumber === undefined ? 'attempt.json' : 'active-attempt.json'),
+      resumePath: join(stateDir, 'resume.json'),
     };
   } catch { fail('CONFIG_INVALID'); }
 }
@@ -134,7 +147,9 @@ export async function ensureOwnedDirectory(root, target) {
     }
   }
 }
-export async function atomicWriteJson(path, value) {
+export async function atomicWriteJson(path, value, {
+  renameFile = rename, wait = sleep, platform = process.platform,
+} = {}) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   let file;
   try {
@@ -144,7 +159,18 @@ export async function atomicWriteJson(path, value) {
     await file.writeFile(JSON.stringify(value, null, 2) + '\n', 'utf8');
     await file.sync();
     await file.close(); file = null;
-    await rename(temporary, path);
+    // Windows readers/scanners can briefly deny replacing a closed destination.
+    // Retry only the rename of this already-fsynced temporary file; never
+    // remove the destination or repeat any wallet progress append.
+    const delays = [20, 40, 80, 160];
+    for (let attempt = 0; ; attempt++) {
+      try { await renameFile(temporary, path); break; }
+      catch (error) {
+        if (platform !== 'win32' || !['EPERM', 'EBUSY', 'EACCES'].includes(error?.code)
+          || attempt >= delays.length) throw error;
+        await wait(delays[attempt]);
+      }
+    }
   } catch {
     await file?.close().catch(() => {});
     await unlink(temporary).catch(() => {});
@@ -236,12 +262,73 @@ export function validateAttempt(raw) {
     || typeof raw.username !== 'string' || !/^[A-Za-z0-9_.]{3,20}$/.test(raw.username)) fail('RECORD_INVALID');
   return { walletNumber: raw.walletNumber, address: raw.address, username: raw.username, saveAttempted: true };
 }
+
+// Enumerate ownership before deduplication, so successful history cannot hide
+// overlapping assignments or ownership of a deferred Save.
+export function plannedNumbers(input) {
+  const plan = normalizeConfig(input);
+  const step = plan.direction === 'asc' ? 1 : -1;
+  const result = [];
+  let offset = 0;
+  for (const [start, end] of plan.ranges ?? [[plan.start, plan.end]]) {
+    for (let i = 0; i <= Math.abs(end - start); i++, offset++) {
+      if (offset % plan.laneCount === plan.laneIndex) result.push(start + i * step);
+    }
+  }
+  return result;
+}
+
+async function deferredFingerprint(config, manifest) {
+  if (config.deferredAttemptWalletNumber === undefined) {
+    // Removing the opt-in may never hide an interrupted Save in the new journal.
+    if (await readPublicJson(join(config.stateDir, 'active-attempt.json'), { optional: true }) !== null) fail('NEEDS_ATTENTION');
+    return null;
+  }
+  const raw = await readPublicJson(config.deferredAttemptPath);
+  const attempt = validateAttempt(raw);
+  if (attempt.walletNumber !== config.deferredAttemptWalletNumber
+    || manifest.find(w => w.walletNumber === attempt.walletNumber)?.address !== attempt.address
+    || attempt.username !== `${config.usernamePrefix}${attempt.walletNumber}`
+    || plannedNumbers(config.plan).includes(attempt.walletNumber)) fail('RECORD_INVALID');
+  return digest(raw);
+}
+
+// All journals remain owned by their original profile. This also checks profiles
+// omitted from a new group, preventing their uncertain Saves being reassigned.
+export async function validateAttemptIsolation(configs, manifest) {
+  const ownership = new Map();
+  const fingerprints = new Map();
+  for (const config of configs) {
+    fingerprints.set(config.profileName, await deferredFingerprint(config, manifest));
+    for (const number of plannedNumbers(config.plan)) {
+      if (ownership.has(number)) fail('CONFIG_INVALID');
+      ownership.set(number, config.profileName);
+    }
+  }
+  const root = join(configs[0].repoDir, '.local', 'registration-worker');
+  let entries;
+  try { entries = await readdir(root, { withFileTypes: true }); }
+  catch (error) { if (error.code === 'ENOENT') return fingerprints; throw error; }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    for (const name of ['attempt.json', 'active-attempt.json']) {
+      const raw = await readPublicJson(join(root, entry.name, name), { optional: true });
+      if (raw === null) continue;
+      const attempt = validateAttempt(raw);
+      const assigned = ownership.get(attempt.walletNumber);
+      if (assigned !== undefined && assigned !== entry.name) fail('ATTEMPT_OUTSIDE_PLAN');
+    }
+  }
+  return fingerprints;
+}
 export function termsCandidate(raw, runId) {
   try {
     const approved = validateTermsConfirmation({ ...raw, confirmed: true, context: '仅本次本地运行的明确确认' });
     if (!Array.isArray(raw.links) || !raw.links.includes(approved.termsUrl) || !raw.links.includes(approved.privacyUrl)) fail('TERMS_INVALID');
     const terms = { declarations: [...approved.declarations], links: [approved.termsUrl, approved.privacyUrl], termsUrl: approved.termsUrl, privacyUrl: approved.privacyUrl };
-    return { formatVersion: 1, runId, digest: digest({ runId, terms }), terms };
+    // Keep the one-run confirmation digest separate from an explicitly approved
+    // content digest. Persisted approval must still produce fresh run consent.
+    return { formatVersion: 1, runId, digest: digest({ runId, terms }), contentDigest: digest(terms), terms };
   } catch { fail('TERMS_INVALID'); }
 }
 
@@ -335,7 +422,7 @@ export async function recoverWorkerLocks(config, confirmedClosed) {
 // A group owns the same OS-user lock as a standalone worker. Only this module
 // can issue a lease; it covers fixed, non-overlapping plans and public snapshots.
 export function validateWorkerGroup(configs) {
-  if (!Array.isArray(configs) || configs.length < 2 || configs.length > 4) fail('CONFIG_INVALID');
+  if (!Array.isArray(configs) || configs.length < 2 || configs.length > MAX_GROUP_WORKERS) fail('CONFIG_INVALID');
   const first = configs[0];
   const paths = new Set(), numbers = new Set();
   const normalizedPath = path => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
@@ -354,15 +441,13 @@ export function validateWorkerGroup(configs) {
       if (paths.has(key)) fail('CONFIG_INVALID');
       paths.add(key);
     }
-    const plan = normalizeConfig(config.plan);
-    const count = Math.abs(plan.end - plan.start) + 1;
-    const step = plan.direction === 'asc' ? 1 : -1;
-    for (let offset = plan.laneIndex; offset < count; offset += plan.laneCount) {
-      const number = plan.start + offset * step;
+    for (const number of plannedNumbers(config.plan)) {
       if (numbers.has(number)) fail('CONFIG_INVALID');
       numbers.add(number);
     }
   }
+  const deferred = configs.map(config => config.deferredAttemptWalletNumber).filter(number => number !== undefined);
+  if (new Set(deferred).size !== deferred.length || deferred.some(number => numbers.has(number))) fail('CONFIG_INVALID');
   return configs;
 }
 
@@ -394,8 +479,12 @@ export async function withWorkerGroupLease(configs, operation, { runId = randomU
       }
       records = mergeProgress(arrays, manifest);
     } catch { fail('PUBLIC_FILE_INVALID'); }
+    const deferredFingerprints = await validateAttemptIsolation(configs, manifest);
     const entries = new Map(configs.map(config => [digest(config), {
       manifest, records, plan: createPlan(config.plan, manifest, records), active: false, runId,
+      deferredFingerprint: deferredFingerprints.get(config.profileName),
+      groupRunId: runId, groupOwner: owner, settled: false, closeConfirmed: false,
+      rearming: false, closing: false, lastPhase: null,
     }]));
     groupLeases.set(lease, entries);
     return await operation(lease);
@@ -403,9 +492,58 @@ export async function withWorkerGroupLease(configs, operation, { runId = randomU
     // Keep global ownership even if a caller mistakenly uses Promise.all and
     // another member rejects before its peers have closed their browsers.
     const entries = groupLeases.get(lease);
-    if (entries) await Promise.allSettled([...entries.values()].map(entry => entry.finished).filter(Boolean));
+    if (entries) {
+      for (const entry of entries.values()) entry.closing = true;
+      await Promise.allSettled([...entries.values()].map(entry => entry.rearmFinished).filter(Boolean));
+      await Promise.allSettled([...entries.values()].map(entry => entry.finished).filter(Boolean));
+    }
     groupLeases.delete(lease);
-    await release?.();
+    // A failed close can leave a live browser owning this OS user's clipboard.
+    // Keep its locks rather than letting a replacement overlap that context.
+    if (!entries || ![...entries.values()].some(entry => entry.settled && !entry.closeConfirmed)) await release?.();
+  }
+}
+
+export async function rearmWorkerGroupMember(config, lease, expectedRunId) {
+  const entry = groupLeases.get(lease)?.get(digest(config));
+  if (!entry || !UUID.test(expectedRunId ?? '') || entry.runId !== expectedRunId
+    || !entry.active || entry.closing || !['stopped', 'failed'].includes(entry.lastPhase)) {
+    if (entry?.active && !entry.settled) fail('WORKER_ALREADY_RUNNING');
+    fail('CONFIRMATION_INVALID');
+  }
+  if (!entry.settled || entry.rearming) fail('WORKER_ALREADY_RUNNING');
+  if (!entry.closeConfirmed) fail('BROWSER_CLOSED');
+  entry.rearming = true;
+  let finishRearm;
+  entry.rearmFinished = new Promise(resolveFinished => { finishRearm = resolveFinished; });
+  try {
+    return await withControlLock(config, async () => {
+      const owner = await readPublicJson(config.globalLockPath);
+      if (owner?.pid !== process.pid || owner.runId !== entry.groupRunId || owner.token !== entry.groupOwner.token) {
+        fail('CONFIRMATION_INVALID');
+      }
+      if (await readPublicJson(config.profileLockPath, { optional: true }) !== null) fail('WORKER_ALREADY_RUNNING');
+      if (await readPublicJson(config.attemptPath, { optional: true }) !== null) fail('NEEDS_ATTENTION');
+      let records, plan;
+      try {
+        const text = await readPublicText(config.progressPath, { optional: true });
+        if (text?.trimStart().startsWith('[')) fail('PUBLIC_FILE_INVALID');
+        // Other group members can still be appending. Only this member's now
+        // quiescent output may be refreshed against the original shared history.
+        records = mergeProgress([entry.records, text === null ? [] : parseProgress(text)], entry.manifest);
+        plan = createPlan(config.plan, entry.manifest, records);
+      } catch { fail('PUBLIC_FILE_INVALID'); }
+      if (entry.closing || groupLeases.get(lease)?.get(digest(config)) !== entry
+        || entry.runId !== expectedRunId) fail('CONFIRMATION_INVALID');
+      const fingerprints = await validateAttemptIsolation([config], entry.manifest);
+      if (fingerprints.get(config.profileName) !== entry.deferredFingerprint) fail('RECORD_INVALID');
+      const runId = randomUUID();
+      Object.assign(entry, { records, plan, runId, active: false, settled: false, closeConfirmed: false, lastPhase: null });
+      return runId;
+    });
+  } finally {
+    entry.rearming = false;
+    finishRearm();
   }
 }
 
@@ -419,7 +557,8 @@ export async function recoverWorkerGroupLocks(configs, confirmedClosed) {
     const global = locks[0];
     if (global && (!Array.isArray(global.members) || JSON.stringify([...global.members].sort())
       !== JSON.stringify(paths.slice(1).sort()))) fail('WORKER_LOCK_STALE');
-    if (global && locks.slice(1).some(lock => lock && lock.runId !== global.runId)) fail('WORKER_LOCK_STALE');
+    if (global && locks.slice(1).some(lock => lock
+      && (lock.groupRunId === undefined ? lock.runId : lock.groupRunId) !== global.runId)) fail('WORKER_LOCK_STALE');
     for (let index = 0; index < paths.length; index++) {
       if (!locks[index]) continue;
       const current = await readPublicJson(paths[index]);
@@ -432,19 +571,25 @@ export async function recoverWorkerGroupLocks(configs, confirmedClosed) {
 
 export async function runWorker(config, dependencies, { setup = false, runId, lease } = {}) {
   const leased = lease === undefined ? null : groupLeases.get(lease)?.get(digest(config));
-  if (lease !== undefined && (!leased || leased.active || setup)) fail('CONFIG_INVALID');
+  if (lease !== undefined && (!leased || leased.active || leased.rearming || leased.closing || setup)) fail('CONFIG_INVALID');
   runId ??= leased?.runId ?? randomUUID();
   if (leased && runId !== leased.runId) fail('CONFIG_INVALID');
   let finishLease;
   if (leased) {
     leased.active = true;
+    leased.settled = false;
+    leased.closeConfirmed = false;
+    leased.lastPhase = null;
     leased.finished = new Promise(resolveFinished => { finishLease = resolveFinished; });
   }
-  const owner = { pid: process.pid, runId, token: randomUUID(), createdAt: now() };
+  const owner = { pid: process.pid, runId, token: randomUUID(), createdAt: now(),
+    ...(leased ? { groupRunId: leased.groupRunId } : {}) };
   let releaseGlobal, releaseProfile, browser, runner, timer, writeQueue = Promise.resolve();
   let stopped = false, current = null, attempt = null, confirmation, completed = 0, total = 0, runnerEventError = null;
+  let launchAttempted = false, launchCloseConfirmed = false;
   let state = { formatVersion: 1, pid: owner.pid, runId, phase: 'starting', startedAt: now(), updatedAt: now(), total: 0, completed: 0, remaining: 0,
-    attentionId: null, canResumeConnection: false };
+    attentionId: null, canResumeConnection: false,
+    ...(config.deferredAttemptWalletNumber === undefined ? {} : { deferredAttemptWalletNumber: config.deferredAttemptWalletNumber }) };
   const writeState = patch => {
     state = { ...state, ...patch,
       ...(patch.phase && patch.phase !== 'waiting_attention' ? { attentionId: null, canResumeConnection: false } : {}),
@@ -462,7 +607,15 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
   const wait = dependencies.sleep ?? sleep;
   const launch = async () => {
     if (browser) return;
-    try { browser = await dependencies.launch(config); } catch { fail('BROWSER_START_FAILED'); }
+    launchAttempted = true;
+    try { browser = await dependencies.launch(config); }
+    catch (error) {
+      // Only the trusted launcher wrapper can attest to closing a partial
+      // startup. A raw browser error (including a same-named field) cannot.
+      launchCloseConfirmed = error instanceof WorkerError && error.code === 'BROWSER_START_FAILED'
+        && error.browserCloseConfirmed === true;
+      fail('BROWSER_START_FAILED');
+    }
   };
   const waitForConnectionRecovery = async firstError => {
     let failure = firstError;
@@ -525,10 +678,13 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
       });
     }
     await writeState({});
+    // Setup/open and even empty plans must not conceal an active Save journal.
+    if (config.deferredAttemptWalletNumber === undefined) await deferredFingerprint(config, []);
+    else if (setup || await readPublicText(config.walletsPath, { optional: true }) === null) fail('CONFIG_INVALID');
     timer = setInterval(() => { writeState({}).catch(() => { stopped = true; }); }, 5000);
     timer.unref?.();
     await ensureDedicatedProfile(config);
-    let manifest = [], records = [], plan = { items: [] };
+    let manifest = [], records = [], plan = { items: [] }, pendingFingerprint = null;
     if (!setup) {
       if (leased) {
         manifest = leased.manifest; records = leased.records; plan = leased.plan;
@@ -561,6 +717,9 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
           plan = createPlan(config.plan, manifest, records);
         } catch (error) { throw error instanceof WorkerError ? error : new WorkerError('PUBLIC_FILE_INVALID'); }
       }
+      const fingerprints = await validateAttemptIsolation([config], manifest);
+      pendingFingerprint = fingerprints.get(config.profileName);
+      if (leased && pendingFingerprint !== leased.deferredFingerprint) fail('RECORD_INVALID');
       completed = plan.completed; total = plan.total;
       await writeState({ total, completed, remaining: plan.remaining });
       const previous = await readPublicJson(config.attemptPath, { optional: true });
@@ -602,6 +761,7 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
             return;
           }
           const next = validateAttempt({ walletNumber: event.walletNumber, address: event.address, username: event.username, saveAttempted: event.saveAttempted });
+          if (await deferredFingerprint(config, manifest) !== pendingFingerprint) fail('RECORD_INVALID');
           if (!current || next.walletNumber !== current.walletNumber || next.address !== current.address
             || (attempt && JSON.stringify(attempt) !== JSON.stringify(next))) fail('RECORD_INVALID');
           await atomicWriteJson(config.attemptPath, next);
@@ -617,6 +777,8 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
     });
     for (const item of plan.items) {
       if (await stopRequested()) break;
+      if (await deferredFingerprint(config, manifest) !== pendingFingerprint
+        || item.walletNumber === config.deferredAttemptWalletNumber) fail('RECORD_INVALID');
       current = item;
       await writeState({ phase: 'working', currentWalletNumber: item.walletNumber, waitingSince: null });
       let record;
@@ -651,13 +813,19 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
             const candidate = termsCandidate(await runner.readTermsCandidate(), runId);
             await atomicWriteJson(config.candidatePath, candidate);
             await writeState({ phase: 'waiting_terms', termsDigest: candidate.digest });
+            if (config.approvedTermsDigest === candidate.contentDigest && !(await stopRequested())) {
+              await acceptWorkerTerms(config, candidate.digest);
+            }
             while (!(await stopRequested())) {
               const accepted = await readPublicJson(config.consentPath, { optional: true });
               if (accepted?.runId === runId && accepted.digest === candidate.digest) {
                 // Resume the same wallet. The runner re-reads and matches Terms
                 // immediately before any agreement click if that dialog remains;
                 // it also safely handles an already-advanced website page.
-                confirmation = validateTermsConfirmation({ ...candidate.terms, confirmed: true, context: `本地 CLI 明确确认；run ${runId}` });
+                confirmation = validateTermsConfirmation({ ...candidate.terms, confirmed: true,
+                  context: config.approvedTermsDigest === candidate.contentDigest
+                    ? `配置中已批准的条款内容摘要 ${candidate.contentDigest}；run ${runId}`
+                    : `本地 CLI 明确确认；run ${runId}` });
                 await writeState({ phase: 'working' });
                 break;
               }
@@ -700,11 +868,24 @@ export async function runWorker(config, dependencies, { setup = false, runId, le
     return { ...state, phase: 'failed', errorCode: code };
   } finally {
     if (timer) clearInterval(timer);
-    await runner?.cleanup?.().catch(() => {});
-    await browser?.close?.().catch(() => {});
-    await writeQueue.catch(() => {});
-    await releaseProfile?.();
-    await releaseGlobal?.();
-    finishLease?.();
+    let closeConfirmed = !launchAttempted || (!browser && launchCloseConfirmed);
+    try {
+      await runner?.cleanup?.().catch(() => {});
+      if (browser) {
+        try { await browser.close(); closeConfirmed = true; }
+        catch { closeConfirmed = false; }
+      }
+      await writeQueue.catch(() => {});
+      if (!closeConfirmed) {
+        const code = browser ? 'BROWSER_CLOSED' : 'BROWSER_START_FAILED';
+        await writeState({ phase: 'failed', errorCode: code }).catch(() => {});
+        throw new WorkerError(code);
+      }
+      await releaseProfile?.();
+      await releaseGlobal?.();
+    } finally {
+      if (leased) Object.assign(leased, { settled: true, closeConfirmed, lastPhase: state.phase });
+      finishLease?.();
+    }
   }
 }

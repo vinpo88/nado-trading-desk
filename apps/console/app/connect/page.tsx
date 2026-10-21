@@ -36,7 +36,7 @@ export default function ConnectPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [acknowledgedRequestId, setAcknowledgedRequestId] = useState<number | null>(null);
-  const [username, setUsername] = useState(() => `ybtl${number}`);
+  const [username, setUsername] = useState(() => `demo${number}`);
   const [authorizedUsername, setAuthorizedUsername] = useState<string | null>(null);
   const usernameIntent = useRef<string | null>(null);
   const previousUsernameAuthorization = useRef<string | null>(null);
@@ -67,7 +67,7 @@ export default function ConnectPage() {
     usernameIntent.current = null;
     previousUsernameAuthorization.current = null;
     setAuthorizedUsername(null);
-    setUsername(Number.isInteger(index) && index >= 0 ? `ybtl${index + 1}` : "");
+    setUsername(Number.isInteger(index) && index >= 0 ? `demo${index + 1}` : "");
   }, [index]);
 
   const changeUsernameAuthorization = (enabled: boolean) => {
@@ -206,8 +206,8 @@ export default function ConnectPage() {
           <div className="space-y-3 border-t border-kumo-line pt-4">
             <Input label="本次官网用户名" value={username} onChange={(event) => setUsername(event.target.value)}
               disabled={authorizedUsername !== null || !wallet || state?.status === "executing"} maxLength={20}
-              autoComplete="off" spellCheck={false} placeholder="例如 ybtl1" />
-            <p className="text-sm text-kumo-subtle">默认使用 ybtl 加钱包编号。若官网提示已占用，可关闭授权后填写备用名，并在官网输入相同用户名。</p>
+              autoComplete="off" spellCheck={false} placeholder="例如 demo1" />
+            <p className="text-sm text-kumo-subtle">默认使用 demo 加钱包编号。若官网提示已占用，可关闭授权后填写备用名，并在官网输入相同用户名。</p>
             {!validUsername && <p role="status" className="text-sm">用户名须为 3–20 位英文字母、数字、下划线或英文句点。</p>}
             <label className="flex items-start gap-2 text-sm">
               <input type="checkbox" checked={authorizedUsername !== null}

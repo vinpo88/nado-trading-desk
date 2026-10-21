@@ -69,17 +69,17 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
   const nameForm = `<form onsubmit="return false"><h2>Set Username</h2><input id="displayName" aria-describedby="name-feedback" oninput="
     const candidate=this.value; this.setAttribute('aria-busy','true'); document.getElementById('name-feedback').textContent='Checking username'; document.getElementById('save-name').disabled=true;
     setTimeout(() => { if(this.value!==candidate)return; this.setAttribute('aria-busy','false');
-      const taken=${conflict ? 'candidate===\'ybtl2\'' : 'false'};
+      const taken=${conflict ? 'candidate===\'demo2\'' : 'false'};
       document.getElementById('name-feedback').textContent=taken?'Username is already taken':'';
       this.setAttribute('aria-invalid',String(taken));document.getElementById('save-name').disabled=taken;
     },35)">
     <p role="alert" id="name-feedback"></p><button id="save-name" disabled onclick="fixtureAction({type:'save',username:document.getElementById('displayName').value})">Save</button></form>`;
   const localHTML = `<!doctype html><html><body>
     <label>钱包编号（从 1 开始）<input id="wallet-number" type="number" value="${startComplete ? 2 : 1}" oninput="
-      const value=this.value;document.getElementById('local-username').value='ybtl'+value;
+      const value=this.value;document.getElementById('local-username').value='demo'+value;
       setTimeout(()=>{if(this.value===value)document.getElementById('wallet-address').textContent=${JSON.stringify(manifest.map(item => item.address)).replaceAll('"', '&quot;')}[Number(value)-1]},40)">
     </label><p id="wallet-address" data-testid="connect-wallet-address">${address(startComplete ? 2 : 1)}</p>
-    <label>本次官网用户名<input id="local-username" value="ybtl${startComplete ? 2 : 1}"></label>
+    <label>本次官网用户名<input id="local-username" value="demo${startComplete ? 2 : 1}"></label>
     <label><input id="username-auth" type="checkbox"${initialAuthorized ? ' checked' : ''}>自动确认一次此用户名签名</label>
     <section aria-labelledby="pairing"><h2 id="pairing">从 Nado 发起连接</h2>
     <label>WalletConnect 连接码<input id="pairing-uri" type="password"></label>
@@ -99,7 +99,7 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
   const releaseStartup = () => renderNado(initialWebsite);
   const releasePairingLink = () => renderNado(`<button onclick="fixtureAction({type:'copy'}).then(() => navigator.clipboard.writeText('${pairingUri}'))">Copy link</button>`);
   const releaseOnboarding = () => { staleTermsVisible = false; return renderNado(terms); };
-  const releaseProfile = (number, username = `ybtl${number}`) => renderNado(profile(number, username));
+  const releaseProfile = (number, username = `demo${number}`) => renderNado(profile(number, username));
   const releaseApprovalCompletion = () => localPage.getByTestId('connect-status')
     .evaluate(node => { node.textContent = '钱包已连接，等待官网请求'; });
   const releaseProposal = async () => {
@@ -163,7 +163,7 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
     if (action.type === 'agree') {
       if (staleTermsVisible) counters.staleTermsAgreements++;
       counters.terms++;
-      return renderNado(existingAfterTerms ? profile(number, 'ybtl' + number) : `<h2>We're Introducing Usernames</h2><button onclick="fixtureAction({type:'next'})">Next</button>`);
+      return renderNado(existingAfterTerms ? profile(number, 'demo' + number) : `<h2>We're Introducing Usernames</h2><button onclick="fixtureAction({type:'next'})">Next</button>`);
     }
     if (action.type === 'next') return renderNado(nameForm);
     if (action.type === 'save') {
@@ -192,10 +192,10 @@ async function fixture(t, { conflict = false, unknownAfterSave = false, existing
 }
 
 test('username alternatives preserve letters and wallet suffix and do not match another wallet', () => {
-  assert.equal(makeUsernameAlternative('ybtl61', 61, '27', 2), 'yb27tl61');
-  assert.equal(usernameBelongsToWallet('yb27tl61', 'ybtl61', 61), true);
-  assert.equal(usernameBelongsToWallet('ybtl610', 'ybtl61', 61), false);
-  assert.throws(() => makeUsernameAlternative('ybtl61', 61, 'x', 1));
+  assert.equal(makeUsernameAlternative('demo61', 61, '27', 2), 'de27mo61');
+  assert.equal(usernameBelongsToWallet('de27mo61', 'demo61', 61), true);
+  assert.equal(usernameBelongsToWallet('demo610', 'demo61', 61), false);
+  assert.throws(() => makeUsernameAlternative('demo61', 61, 'x', 1));
 });
 
 test('real Playwright fixture: explicit terms, delayed address/render, clipboard focus, one Save, and next wallet', async t => {
@@ -206,7 +206,7 @@ test('real Playwright fixture: explicit terms, delayed address/render, clipboard
   assert.deepEqual((await f.runner.readTermsCandidate()).declarations, declarations);
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.loginComplete, true);
   assert.equal(f.counters.saves, 1);
   assert.equal(await f.localPage.getByRole('checkbox', { name: '自动确认一次此用户名签名' }).isChecked(), false);
@@ -220,15 +220,15 @@ test('real Playwright fixture: explicit terms, delayed address/render, clipboard
 test('real Playwright fixture: visible name conflict picks an inserted-digit name before signing once', async t => {
   const f = await fixture(t, { conflict: true });
   const record = await f.runner.runWallet(2, confirmation);
-  assert.notEqual(record.username, 'ybtl2');
-  assert.equal(usernameBelongsToWallet(record.username, 'ybtl2', 2), true);
+  assert.notEqual(record.username, 'demo2');
+  assert.equal(usernameBelongsToWallet(record.username, 'demo2', 2), true);
   assert.equal(f.counters.saves, 1);
 });
 
 test('real Playwright fixture: existing name after Terms completes without any username Save', async t => {
   const f = await fixture(t, { existingAfterTerms: true });
   const record = await f.runner.runWallet(2, confirmation);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.usernameAutoSigned, false);
   assert.equal(f.counters.saves, 0);
 });
@@ -253,11 +253,11 @@ test('real Playwright fixture: failed write-ahead event prevents Save and revoke
 });
 
 test('real Playwright fixture: crash recovery requires the exact journal username and never signs again', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
-  const good = await fixture(t, { startComplete: 'ybtl2', resumeAttempt });
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
+  const good = await fixture(t, { startComplete: 'demo2', resumeAttempt });
   assert.equal((await good.runner.runWallet(2, confirmation)).loginComplete, true);
   assert.equal(good.counters.saves, 0);
-  const wrong = await fixture(t, { startComplete: 'yb7tl2', resumeAttempt });
+  const wrong = await fixture(t, { startComplete: 'de7mo2', resumeAttempt });
   await assert.rejects(() => wrong.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.equal(wrong.counters.saves, 0);
 });
@@ -275,7 +275,7 @@ test('Edge and Chrome concurrent fixture: shared clipboard and UI scheduler pres
   ]);
   assert.deepEqual([first.walletNumber, second.walletNumber], [2, 3]);
   assert.deepEqual([first.address, second.address], [manifest[1].address, manifest[2].address]);
-  assert.deepEqual([first.username, second.username], ['ybtl2', 'ybtl3']);
+  assert.deepEqual([first.username, second.username], ['demo2', 'demo3']);
   assert.equal(sharedClipboard.text, '');
   assert.deepEqual([a.counters.saves, b.counters.saves, a.counters.forbidden, b.counters.forbidden], [1, 1, 0, 0]);
   await Promise.all([a.runner.cleanup(), b.runner.cleanup()]);
@@ -294,7 +294,7 @@ test('delayed pairing link: repeated pending rounds keep the vault open and resu
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.loginComplete, true);
   assert.deepEqual([f.counters.signins, f.counters.walletconnect, f.counters.copies, f.counters.proposals, f.counters.saves], [1, 1, 1, 1, 1]);
   assert.equal(f.counters.forbidden, 0);
@@ -344,19 +344,19 @@ test('delayed pairing link: a peer runner completes while the pending runner rel
 });
 
 test('journal reconnect: signed-out wallet with a prior Save reconnects and verifies existing name without another Save', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { existingAfterTerms: true, resumeAttempt });
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.loginComplete, true);
   assert.equal(record.usernameAutoSigned, false);
   assert.deepEqual([f.counters.signins, f.counters.walletconnect, f.counters.proposals, f.counters.saves], [1, 1, 1, 0]);
 });
 
 test('journal reconnect: delayed link with a prior Save requires attention instead of automatic pending retry', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { deferPairingLink: true, resumeAttempt, timeoutMs: 500 });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.signins, f.counters.walletconnect, f.counters.copies, f.counters.proposals, f.counters.saves], [1, 1, 0, 0, 0]);
@@ -377,7 +377,7 @@ test('delayed onboarding: repeated pending rounds preserve the approved connecti
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.loginComplete, true);
   assert.deepEqual([f.counters.signins, f.counters.walletconnect, f.counters.copies, f.counters.proposals,
     f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 1, 1, 1, 1]);
@@ -407,7 +407,7 @@ test('delayed onboarding: a local pending signature request requires attention i
 });
 
 test('delayed onboarding: a prior Save journal forbids automatic onboarding retry', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { deferOnboarding: true, resumeAttempt, timeoutMs: 500 });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.signins, f.counters.walletconnect, f.counters.copies, f.counters.proposals,
@@ -427,7 +427,7 @@ test('stale Terms recovery: close only the exact old dialog, then pair freshly b
 });
 
 test('stale Terms recovery: a Save journal prevents closing or accepting the old dialog', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { startStaleTerms: true, resumeAttempt });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.staleTermsCloses, f.counters.terms, f.counters.signins, f.counters.proposals, f.counters.saves], [0, 0, 0, 0, 0]);
@@ -458,11 +458,11 @@ test('stale onboarding profile: ignore the previous wallet until the expected ad
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'ONBOARDING_PENDING');
   assert.equal(f.localPage.isClosed(), false);
   assert.deepEqual([f.counters.signins, f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 0, 0]);
-  await f.releaseProfile(2, 'ybtl2');
+  await f.releaseProfile(2, 'demo2');
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.usernameAutoSigned, false);
   assert.equal(record.loginComplete, true);
   assert.deepEqual([f.counters.signins, f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 0, 0]);
@@ -496,7 +496,7 @@ test('delayed approval completion: unexpected request or connection error cannot
 });
 
 test('delayed approval completion: a prior Save journal requires attention instead of pending retry', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { deferApprovalCompletion: true, resumeAttempt, timeoutMs: 500 });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 0, 0]);
@@ -551,6 +551,7 @@ test('delayed connection proposal: unexpected request or connection error forbid
         siteStage: 'pairing',
         localStatus: status === '连接未完成' ? 'error' : 'request',
         fault: 'ui_state',
+        recoveryBlocker: 'failure_unconfirmed',
         walletMatches: true,
         usernameMatches: true,
         authorizationArmed: false,
@@ -579,7 +580,7 @@ test('delayed connection proposal: changed username or armed authorization forbi
 });
 
 test('delayed connection proposal: a prior Save journal requires attention instead of pending retry', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { deferProposal: true, resumeAttempt, timeoutMs: 500 });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 0, 0, 0]);
@@ -593,7 +594,7 @@ test('delayed website startup: idle or disconnected wallet waits without actions
       await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'WEBSITE_LOADING_PENDING');
       assert.equal(f.localPage.isClosed(), false);
       assert.equal(await f.localPage.getByLabel('钱包编号（从 1 开始）', { exact: true }).inputValue(), '1');
-      assert.equal(await f.localPage.getByLabel('本次官网用户名', { exact: true }).inputValue(), 'ybtl1');
+      assert.equal(await f.localPage.getByLabel('本次官网用户名', { exact: true }).inputValue(), 'demo1');
       assert.equal(await f.localPage.getByTestId('connect-status').innerText(), status);
       assert.deepEqual(f.actions, []);
       assert.deepEqual([f.counters.signins, f.counters.copies, f.counters.proposals,
@@ -609,7 +610,7 @@ test('delayed website startup: idle or disconnected wallet waits without actions
 });
 
 test('delayed website startup: a prior Save journal forbids automatic loading retry', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { startupDelayed: true, resumeAttempt, timeoutMs: 500 });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   assert.deepEqual([f.counters.signins, f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [0, 0, 0, 0, 0]);
@@ -700,7 +701,7 @@ test('delayed prepared page: finish waits for Terms to return without replaying 
 });
 
 test('delayed Ink profile: hiding Switch to Ink does not complete before the profile chain updates', async t => {
-  const f = await fixture(t, { startComplete: 'ybtl2' });
+  const f = await fixture(t, { startComplete: 'demo2' });
   await f.nadoPage.locator('body').evaluate(body => {
     const chain = body.querySelector('img');
     chain.alt = 'Other';
@@ -715,7 +716,7 @@ test('delayed Ink profile: hiding Switch to Ink does not complete before the pro
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.websiteNetwork, 'Ink');
   assert.equal(record.loginComplete, true);
   assert.equal(await f.nadoPage.locator('img').getAttribute('alt'), 'Ink');
@@ -729,7 +730,7 @@ test('unnamed Account 1 profile: stale website session signs out and pairs fresh
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.usernameAutoSigned, true);
   assert.equal(record.loginComplete, true);
   assert.deepEqual(f.actions, ['menu', 'signout', 'signin', 'walletconnect', 'copy', 'proposal', 'approve', 'agree', 'next', 'save']);
@@ -799,7 +800,7 @@ for (const title of ['', 'Nado 交易台']) {
     await f.releaseProposal();
     const record = await f.runner.runWallet(2, confirmation);
     assert.equal(record.walletNumber, 2);
-    assert.equal(record.username, 'ybtl2');
+    assert.equal(record.username, 'demo2');
     assert.equal(record.loginComplete, true);
     assert.deepEqual([f.counters.signins, f.counters.copies, f.counters.proposals,
       f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 1, 1, 1, 1]);
@@ -810,11 +811,11 @@ test('Terms continuation: a matching completed profile after waiting for consent
   const f = await fixture(t);
   await assert.rejects(() => f.runner.runWallet(2), error => error.code === 'TERMS_CONFIRMATION_REQUIRED');
   assert.deepEqual((await f.runner.readTermsCandidate()).declarations, declarations);
-  await f.releaseProfile(2, 'ybtl2');
+  await f.releaseProfile(2, 'demo2');
   const record = await f.runner.runWallet(2, confirmation);
   assert.equal(record.walletNumber, 2);
   assert.equal(record.address, manifest[1].address);
-  assert.equal(record.username, 'ybtl2');
+  assert.equal(record.username, 'demo2');
   assert.equal(record.loginComplete, true);
   assert.equal(record.usernameAutoSigned, false);
   assert.deepEqual([f.counters.proposals, f.counters.approvals, f.counters.terms, f.counters.saves], [1, 1, 0, 0]);
@@ -914,6 +915,7 @@ test('explicit connection recovery: unknown, source rejection, near-match and am
     const failure = await failDisconnected(f);
     assert.notEqual(failure.connectionRecoveryAllowed, true);
     assert.equal(failure.uiState.disconnectReason, 'unknown');
+    assert.equal(failure.uiState.recoveryBlocker, 'failure_unconfirmed');
     await assert.rejects(() => f.runner.recoverConnection(2), error => error.connectionRecoveryAllowed !== true);
     assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
   }
@@ -931,6 +933,8 @@ test('explicit connection recovery: armed authority, wrong wallet or username, a
     }, change);
     const failure = await failDisconnected(f);
     assert.notEqual(failure.connectionRecoveryAllowed, true);
+    assert.equal(failure.uiState.recoveryBlocker,
+      change === 'authorization' ? 'authorization_armed' : change === 'request' ? 'active_request' : 'state_changed');
     assert.equal(failure.retainedBrowserSafe, true);
     assert.equal(await f.localPage.getByRole('checkbox').isChecked(), false);
     await assert.rejects(() => f.runner.recoverConnection(2));
@@ -939,11 +943,13 @@ test('explicit connection recovery: armed authority, wrong wallet or username, a
 });
 
 test('explicit connection recovery: an existing Save journal cannot be reset even when disconnected with a known error', async t => {
-  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'ybtl2', saveAttempted: true };
+  const resumeAttempt = { walletNumber: 2, address: manifest[1].address, username: 'demo2', saveAttempted: true };
   const f = await fixture(t, { deferProposal: true, timeoutMs: 500, resumeAttempt });
   await assert.rejects(() => f.runner.runWallet(2, confirmation), error => error.code === 'NEEDS_ATTENTION');
   await disconnectFixture(f);
-  assert.notEqual((await failDisconnected(f)).connectionRecoveryAllowed, true);
+  const failure = await failDisconnected(f);
+  assert.notEqual(failure.connectionRecoveryAllowed, true);
+  assert.equal(failure.uiState.recoveryBlocker, 'save_intent');
   await assert.rejects(() => f.runner.recoverConnection(2));
   assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
 });
@@ -1024,8 +1030,49 @@ test('explicit connection recovery: real website alerts and visible challenge fr
       else node.title = 'Synthetic verification challenge';
       body.appendChild(node);
     }, obstruction);
-    assert.notEqual((await failDisconnected(f)).connectionRecoveryAllowed, true);
+    const failure = await failDisconnected(f);
+    assert.notEqual(failure.connectionRecoveryAllowed, true);
+    assert.equal(failure.uiState.recoveryBlocker, 'site_alert_or_frame');
     await assert.rejects(() => f.runner.recoverConnection(2));
     assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
   }
+});
+
+test('recovery diagnostics: known pair failure with a still-busy receive button remains ineligible', async t => {
+  const f = await recoverableFixture(t, connectionFailureMessages[1][0]);
+  await f.localPage.getByRole('button', { name: '接收官网连接请求', exact: true })
+    .evaluate(button => { button.setAttribute('aria-busy', 'true'); });
+  const failure = await failDisconnected(f);
+  assert.equal(failure.uiState.disconnectReason, 'pair_failed');
+  assert.equal(failure.uiState.recoveryBlocker, 'local_busy');
+  assert.equal(failure.retainedBrowserSafe, true);
+  assert.notEqual(failure.connectionRecoveryAllowed, true);
+  await assert.rejects(() => f.runner.recoverConnection(2));
+  assert.deepEqual([f.counters.navigations, f.counters.proposals, f.counters.approvals, f.counters.saves], [1, 1, 0, 0]);
+});
+
+test('recovery diagnostics: an existing website profile blocks reset without exposing profile data', async t => {
+  const f = await recoverableFixture(t);
+  await f.releaseProfile(2);
+  const failure = await failDisconnected(f);
+  assert.equal(failure.uiState.recoveryBlocker, 'site_profile');
+  assert.notEqual(failure.connectionRecoveryAllowed, true);
+  await assert.rejects(() => f.runner.recoverConnection(2));
+  assert.equal(JSON.stringify(failure.uiState).includes(manifest[1].address), false);
+  assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
+});
+
+test('recovery diagnostics: an inspection exception records only a fixed blocker and never retries', async t => {
+  const f = await recoverableFixture(t);
+  // The button's accessible name is absent, so the existing getAttribute check
+  // times out. No additional observer or fallback read is introduced.
+  f.localPage.setDefaultTimeout(100);
+  await f.localPage.getByRole('button', { name: '接收官网连接请求', exact: true })
+    .evaluate(button => { button.textContent = 'SYNTHETIC_PRIVATE_RECOVERY_SENTINEL'; });
+  const failure = await failDisconnected(f);
+  assert.equal(failure.uiState.recoveryBlocker, 'inspection_failed');
+  assert.notEqual(failure.connectionRecoveryAllowed, true);
+  assert.equal(JSON.stringify(failure.uiState).includes('SYNTHETIC_PRIVATE_RECOVERY_SENTINEL'), false);
+  await assert.rejects(() => f.runner.recoverConnection(2));
+  assert.deepEqual([f.counters.navigations, f.counters.approvals, f.counters.saves], [1, 0, 0]);
 });

@@ -5,7 +5,8 @@ import { validateRequest, type PreparedRequest } from "../../../../apps/console/
 
 const NOW = 1_792_500_000_000;
 const ADDRESS = "0x1111111111111111111111111111111111111111";
-const HASH = "0x50a1cf0cf0a6578c6b13ff65a8a042cb0313882780918cef0a12fdbbc9a5fe9c";
+// Independent fixture: Keccak-256 of the fixed MessagePack map for demo6.
+const HASH = "0x3664cb1dd71b08092dbfb1ed051077913fbcc2438782e09eceb44905dde2669a";
 function fixture(): any {
   return {
     kind: "typedData", method: "eth_signTypedData_v4", address: ADDRESS, title: "irrelevant", details: "irrelevant", createdAt: NOW,
@@ -25,56 +26,56 @@ const domainSchema = [
   { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "address" },
 ];
 describe("strict Nado username authorization", () => {
-  it("reproduces the official canonical MessagePack hash for public username ybtl6", () => {
-    expect(getUsernamePayloadHash("ybtl6")).toBe(HASH);
-    expect(getUsernamePayloadHash("YBTL6")).not.toBe(HASH);
-    expect(matchesUsernameAuthorization(fixture(), "ybtl6", NOW)).toBe(true);
+  it("reproduces the official canonical MessagePack hash for synthetic username demo6", () => {
+    expect(getUsernamePayloadHash("demo6")).toBe(HASH);
+    expect(getUsernamePayloadHash("DEMO6")).not.toBe(HASH);
+    expect(matchesUsernameAuthorization(fixture(), "demo6", NOW)).toBe(true);
   });
   it("matches the independent 12-byte default encoding and a real policy-validated request", () => {
     const raw = fixture();
     expect(raw.payload.typedData.message.sender).toBe(ADDRESS + stringToHex("default", { size: 12 }).slice(2));
     expect(raw.payload.typedData.message.sender).toHaveLength(66);
     const prepared = validateRequest("eth_signTypedData_v4", [ADDRESS, raw.payload.typedData], ADDRESS);
-    expect(matchesUsernameAuthorization(prepared, "ybtl6", NOW)).toBe(true);
+    expect(matchesUsernameAuthorization(prepared, "demo6", NOW)).toBe(true);
   });
   it("allows the exact optional EIP712Domain schema and equivalent chain encodings", () => {
     const request = fixture(); request.payload.typedData.types.EIP712Domain = domainSchema;
     for (const chainId of [57073, "57073", "0xdef1"]) {
       request.payload.typedData.domain.chainId = chainId;
-      expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(true);
+      expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(true);
     }
   });
-  it.each(["", "yb", "ybtl6 ", "ybtl6\n", "a".repeat(21), "钱包6"])("rejects invalid expected username %s", name => {
+  it.each(["", "de", "demo6 ", "demo6\n", "a".repeat(21), "钱包6"])("rejects invalid expected username %s", name => {
     expect(matchesUsernameAuthorization(fixture(), name, NOW)).toBe(false);
     expect(() => getUsernamePayloadHash(name)).toThrow();
   });
   it.each(["mobile:execute_set_bio", "mobile:execute_set_private_mode", "mobile:execute_set_follow", "link_signer", "place_order", "mobile:execute_set_username "])("rejects another operation %s", method => {
     const request = fixture(); request.payload.typedData.message.method = method;
-    expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false);
+    expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false);
   });
   it.each(["LinkSigner", "Order", "Permit", "Withdraw", "NadoAuthentication "])("never authorizes primaryType %s", type => {
     const request = fixture(); request.payload.typedData.primaryType = type;
-    expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false);
+    expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false);
   });
   it.each(["transaction", "login", "read", "switchChain"])("never authorizes request kind %s", kind => {
     const request = fixture(); request.kind = kind;
-    expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false);
+    expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false);
   });
   it("rejects hashes for any other username, wrong signer and other subaccount", () => {
-    expect(matchesUsernameAuthorization(fixture(), "ybtl7", NOW)).toBe(false);
+    expect(matchesUsernameAuthorization(fixture(), "demo7", NOW)).toBe(false);
     for (const mutate of [
       (r: any) => { r.payload.typedData.message.payloadHash = `0x${"0".repeat(64)}`; },
       (r: any) => { r.address = "0x2222222222222222222222222222222222222222"; },
       (r: any) => { r.payload.typedData.message.sender = `${ADDRESS}${"0".repeat(24)}`; },
       (r: any) => { r.method = "eth_sendTransaction"; },
-    ]) { const request = fixture(); mutate(request); expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false); }
+    ]) { const request = fixture(); mutate(request); expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false); }
   });
   it("rejects wrong domain fields, missing fields and any salt", () => {
     for (const mutate of [
       (d: any) => { d.name = "Other"; }, (d: any) => { d.version = "1"; },
       (d: any) => { d.chainId = 1; }, (d: any) => { d.verifyingContract = ADDRESS; },
       (d: any) => { delete d.chainId; }, (d: any) => { d.salt = `0x${"0".repeat(64)}`; },
-    ]) { const request = fixture(); mutate(request.payload.typedData.domain); expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false); }
+    ]) { const request = fixture(); mutate(request.payload.typedData.domain); expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false); }
   });
   it("rejects altered types, reordered/extra fields, and unused extra type definitions", () => {
     for (const mutate of [
@@ -87,33 +88,33 @@ describe("strict Nado username authorization", () => {
       (t: any) => { t.LinkSigner = []; },
       (t: any) => { t.EIP712Domain = [...domainSchema].reverse(); },
       (t: any) => { t.EIP712Domain = [...domainSchema, { name: "salt", type: "bytes32" }]; },
-    ]) { const request = fixture(); mutate(request.payload.typedData.types); expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false); }
+    ]) { const request = fixture(); mutate(request.payload.typedData.types); expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false); }
   });
   it("rejects extras at every signed data level and missing authentication fields", () => {
     for (const mutate of [
       (r: any) => { r.payload.extra = true; },
       (r: any) => { r.payload.typedData.extra = true; },
       (r: any) => { r.payload.typedData.message.spender = ADDRESS; },
-      (r: any) => { r.payload.typedData.message.display_name = "ybtl6"; },
+      (r: any) => { r.payload.typedData.message.display_name = "demo6"; },
       (r: any) => { delete r.payload.typedData.message.nonce; },
-    ]) { const request = fixture(); mutate(request); expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false); }
+    ]) { const request = fixture(); mutate(request); expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false); }
   });
   it("enforces uint64 and strictly future deadlines no more than 100 seconds ahead", () => {
     for (const offset of [-1, 0, 100_001]) {
       const request = fixture(); request.payload.typedData.message.nonce = (BigInt(NOW + offset) * 1_000_000n + 999_999n).toString();
-      expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false);
+      expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false);
     }
     for (const nonce of ["-1", "18446744073709551616", "123x", 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       const request = fixture(); request.payload.typedData.message.nonce = nonce;
-      expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(false);
+      expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(false);
     }
     const request = fixture(); request.payload.typedData.message.nonce = (BigInt(NOW + 100_000) * 1_000_000n + 999_999n).toString();
-    expect(matchesUsernameAuthorization(request, "ybtl6", NOW)).toBe(true);
+    expect(matchesUsernameAuthorization(request, "demo6", NOW)).toBe(true);
   });
   it("returns false for malformed input and invalid clocks without throwing", () => {
     for (const request of [null, undefined, {}, { kind: "typedData", method: "eth_signTypedData_v4" }]) {
-      expect(matchesUsernameAuthorization(request as PreparedRequest, "ybtl6", NOW)).toBe(false);
+      expect(matchesUsernameAuthorization(request as PreparedRequest, "demo6", NOW)).toBe(false);
     }
-    for (const now of [NaN, Infinity, -1, 1.5]) expect(matchesUsernameAuthorization(fixture(), "ybtl6", now)).toBe(false);
+    for (const now of [NaN, Infinity, -1, 1.5]) expect(matchesUsernameAuthorization(fixture(), "demo6", now)).toBe(false);
   });
 });

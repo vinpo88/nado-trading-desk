@@ -37,7 +37,7 @@ function orderData() {
   };
 }
 
-function usernameData(username = "ybtl6") {
+function usernameData(username = "demo6") {
   return {
     domain: { name: "Nado", version: "0.0.1", chainId: INK_CHAIN_ID, verifyingContract: "0x05ec92D78ED421f3D3Ada77FFdE167106565974E" },
     types: { NadoAuthentication: [
@@ -274,7 +274,7 @@ test("bridge: username authorization defaults off and signs only the exact pendi
     fixture.kit.emit("session_request", officialRequest(500, "eth_signTypedData_v4", [ADDRESS, signedData]));
     await expect.poll(() => fixture.bridge.getSnapshot().status).toBe("request");
     expect(fixture.counts.executions).toBe(0);
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     await Promise.all([fixture.bridge.approveRequest(500), fixture.bridge.approveRequest(500)]);
     await expect.poll(() => fixture.bridge.getSnapshot().status).toBe("connected");
     expect(fixture.counts.executions).toBe(1);
@@ -288,7 +288,7 @@ test("bridge: username authorization defaults off and signs only the exact pendi
     await fixture.bridge.rejectRequest();
 
     // Explicitly re-arming must still never execute an already processed request ID.
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     fixture.kit.emit("session_request", officialRequest(500, "eth_signTypedData_v4", [ADDRESS, usernameData()]));
     await expect.poll(() => fixture.kit.responses.filter((response) => response.response.id === 500).length).toBe(2);
     expect(fixture.counts.executions).toBe(1);
@@ -306,7 +306,7 @@ test("bridge: armed username permission ignores other names, methods and altered
   try {
     await pairFake(fixture, [...SUPPORTED_METHODS]);
     await fixture.bridge.approveProposal();
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     const wrongMethod = usernameData(); wrongMethod.message.method = "mobile:execute_set_bio";
     const wrongHash = usernameData(); wrongHash.message.payloadHash = `0x${"00".repeat(32)}`;
     const wrongContract = usernameData(); wrongContract.domain.verifyingContract = CONTRACT;
@@ -317,7 +317,7 @@ test("bridge: armed username permission ignores other names, methods and altered
       message: { sender: usernameData().message.sender, signer: `0x${"22".repeat(32)}`, nonce: "1" },
     };
     const requests = [
-      officialRequest(510, "eth_signTypedData_v4", [ADDRESS, usernameData("ybtl7")]),
+      officialRequest(510, "eth_signTypedData_v4", [ADDRESS, usernameData("demo7")]),
       officialRequest(511, "eth_signTypedData_v4", [ADDRESS, wrongMethod]),
       officialRequest(512, "eth_signTypedData_v4", [ADDRESS, wrongHash]),
       officialRequest(513, "eth_signTypedData_v4", [ADDRESS, wrongContract]),
@@ -331,7 +331,7 @@ test("bridge: armed username permission ignores other names, methods and altered
       fixture.kit.emit("session_request", request);
       await expect.poll(() => fixture.bridge.getSnapshot().status).toBe("request");
       expect(fixture.counts.executions).toBe(0);
-      expect(fixture.bridge.getSnapshot().usernameAuthorization).toBe("ybtl6");
+      expect(fixture.bridge.getSnapshot().usernameAuthorization).toBe("demo6");
       await fixture.bridge.rejectRequest();
     }
     fixture.kit.emit("session_request", officialRequest(518, "eth_signTypedData_v4", [ADDRESS, usernameData()]));
@@ -347,13 +347,13 @@ test("bridge: username authorization can be revoked and never crosses a disconne
   try {
     await pairFake(fixture, ["eth_signTypedData_v4"]);
     await fixture.bridge.approveProposal();
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     fixture.bridge.setUsernameAuthorization(null);
     fixture.kit.emit("session_request", officialRequest(520, "eth_signTypedData_v4", [ADDRESS, usernameData()]));
     await expect.poll(() => fixture.bridge.getSnapshot().status).toBe("request");
     expect(fixture.counts.executions).toBe(0);
     await fixture.bridge.rejectRequest();
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     await fixture.bridge.disconnect();
     expect(fixture.bridge.getSnapshot().usernameAuthorization).toBeNull();
     fixture.kit.emit("session_request", officialRequest(521, "eth_signTypedData_v4", [ADDRESS, usernameData()]));
@@ -377,7 +377,7 @@ test("bridge: username permission is consumed before execution and cannot retry 
   try {
     await pairFake(fixture, ["eth_signTypedData_v4"]);
     await fixture.bridge.approveProposal();
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     fixture.kit.emit("session_request", officialRequest(530, "eth_signTypedData_v4", [ADDRESS, usernameData()]));
     await expect.poll(() => fixture.kit.responses.some((response) => response.response.id === 530 && response.response.error)).toBeTruthy();
     expect(calls).toBe(1);
@@ -396,7 +396,7 @@ test("bridge: username auto-approval stays bound to the reviewed request when it
   try {
     await pairFake(fixture, ["eth_signTypedData_v4"]);
     await fixture.bridge.approveProposal();
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     revoke = () => fixture.bridge.setUsernameAuthorization(null);
     fixture.kit.emit("session_request", officialRequest(540, "eth_signTypedData_v4", [ADDRESS, usernameData()]));
     await expect.poll(() => fixture.bridge.getSnapshot().status).toBe("request");
@@ -415,7 +415,7 @@ test("bridge: username auto-approval never approves a replacement pending reques
   try {
     await pairFake(fixture, ["eth_signTypedData_v4"]);
     await fixture.bridge.approveProposal();
-    fixture.bridge.setUsernameAuthorization("ybtl6");
+    fixture.bridge.setUsernameAuthorization("demo6");
     replace = () => {
       replacement = fixture.bridge.rejectRequest().then(() => {
         fixture.kit.emit("session_request", officialRequest(551, "eth_signTypedData_v4", [ADDRESS, orderData()]));
@@ -425,7 +425,7 @@ test("bridge: username auto-approval never approves a replacement pending reques
     await replacement;
     await expect.poll(() => fixture.bridge.getSnapshot().request?.title).toBe("签署 Nado 订单");
     expect(fixture.counts.executions).toBe(0);
-    expect(fixture.bridge.getSnapshot().usernameAuthorization).toBe("ybtl6");
+    expect(fixture.bridge.getSnapshot().usernameAuthorization).toBe("demo6");
     expect(fixture.kit.responses.filter((response) => response.response.result !== undefined)).toHaveLength(0);
   } finally { await fixture.bridge.dispose(); }
 });

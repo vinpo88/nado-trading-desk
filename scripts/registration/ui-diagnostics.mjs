@@ -12,6 +12,10 @@ const ENUMS = {
   ]),
   fault: new Set(['ui_timeout', 'ui_state', 'origin_mismatch', 'aborted']),
   disconnectReason: new Set(['pair_timeout', 'pair_failed', 'proposal_expired', 'unknown']),
+  recoveryBlocker: new Set([
+    'local_busy', 'active_request', 'site_alert_or_frame', 'site_profile',
+    'save_intent', 'state_changed', 'failure_unconfirmed', 'authorization_armed', 'inspection_failed',
+  ]),
 };
 const BOOLEANS = [
   'walletMatches', 'usernameMatches', 'authorizationArmed', 'siteProfileMatches',

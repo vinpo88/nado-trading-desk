@@ -401,7 +401,7 @@ export function createPlannedNadoRunner({ config = {}, records = [], ...options 
   const plan = createPlan(planConfig, options.walletManifest, records);
   const browser = options.browser ?? config.browser ?? 'iab';
   if (browser !== 'iab' && plan.items.length && options.smokeTestWalletNumber !== plan.items[0].walletNumber) throw new Error('外部浏览器的冒烟编号必须是当前分片计划的第一个未完成钱包');
-  const prefix = config.usernamePrefix ?? 'ybtl';
+  const prefix = config.usernamePrefix ?? 'demo';
   if (typeof prefix !== 'string' || !/^[A-Za-z0-9_.]{1,14}$/.test(prefix)) throw new Error('用户名固定前缀无效');
   const runner = createNadoBatchRunner({
     ...options, browser, progressPath: options.progressPath ?? config.progressPath,

@@ -11,9 +11,9 @@ import {
 import { parseProgress } from '../cli.mjs';
 
 const address = number => `0x${number.toString(16).padStart(40, '0')}`;
-const attempted = { walletNumber: 1, address: address(1), username: 'ybtl1', saveAttempted: true };
+const attempted = { walletNumber: 1, address: address(1), username: 'demo1', saveAttempted: true };
 const verified = number => ({
-  walletNumber: number, address: address(number), username: `ybtl${number}`,
+  walletNumber: number, address: address(number), username: `demo${number}`,
   status: 'verified_login_and_ink', loginComplete: true, websiteSignedIn: true,
   websiteNetwork: 'Ink', approvedChainId: 57073, agentTransactionsSent: 0,
 });

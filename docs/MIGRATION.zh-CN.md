@@ -74,7 +74,7 @@ node scripts/registration/cli.mjs plan --config registration.config.local.json -
 
 默认发布计划为 **10000 → 1 倒序**。历史记录如果按升序完成了一部分，继续时让计划器按新方向跳过已完成编号；不要把“旧日志最大编号 + 1”当作倒序计划的起点。实际少于 10,000 个钱包时，应显式设置边界和起止编号，使计划与清单一致。
 
-实际续接使用 `createPlannedNadoRunner`，把已核对的配置、清单和历史记录传入后，每次 `prepareNext()` 只准备该分片的下一个未完成钱包；`finish` 全部核验且写入进度成功才推进。失败不会跳号，队列为空返回 `null`。默认 `usernamePrefix` 为 `ybtl`，名称由前缀加编号组成；移交时也要保留实际使用的命名规则，不能把已有用户名误当作待覆盖项。
+实际续接使用 `createPlannedNadoRunner`，把已核对的配置、清单和历史记录传入后，每次 `prepareNext()` 只准备该分片的下一个未完成钱包；`finish` 全部核验且写入进度成功才推进。失败不会跳号，队列为空返回 `null`。默认 `usernamePrefix` 为 `demo`，名称由前缀加编号组成；移交时也要保留实际使用的命名规则，不能把已有用户名误当作待覆盖项。
 
 直接调用 CUA 运行器函数时，配置对象已经失去文件目录信息，应先把 `progressPath` 解析为绝对路径，或使用明确写入目标的 `appendProgress` 回调。这与计划器 CLI 的路径解析不同。
 

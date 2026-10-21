@@ -16,7 +16,7 @@ const element = values => ({ getClientRects: () => [1], textContent: '', innerTe
 // A synthetic visible DOM and documented locator surface. No browser, wallet,
 // relay, or external request is created by these tests.
 function fakeTabs({ browser = 'chrome', sharedClipboard = { text: '' }, tag = 'ab', badFill = false, wrongOutcome = false, wrongAddress = false, chainAlt = 'Ink' } = {}) {
-  let website = 'signin'; let local = 'idle'; let number = '1'; let username = 'ybtl1'; let displayName = ''; let capturedUri = '';
+  let website = 'signin'; let local = 'idle'; let number = '1'; let username = 'demo1'; let displayName = ''; let capturedUri = '';
   const actions = [];
   const ownUri = `wc:${tag.repeat(32)}@2?symKey=${'cd'.repeat(32)}&expiryTimestamp=${Math.floor(Date.now() / 1000) + 600}`;
   const address = () => wrongAddress ? '0x' + 'f'.repeat(40) : manifest[Number(number) - 1].address;
@@ -52,7 +52,7 @@ function fakeTabs({ browser = 'chrome', sharedClipboard = { text: '' }, tag = 'a
       async waitFor() { if (name === 'Save' && website !== 'username') throw new Error('Wrong stage'); },
       async check() { actions.push('authorize:' + username); },
       async fill(value) {
-        if (name === '钱包编号（从 1 开始）') { number = value; username = 'ybtl' + value; }
+        if (name === '钱包编号（从 1 开始）') { number = value; username = 'demo' + value; }
         else if (name === '本次官网用户名') username = value;
         else if (name === '#displayName') displayName = value;
         else if (name === 'WalletConnect 连接码') {
@@ -160,8 +160,8 @@ test('FIFO clipboard lock serializes whole operations and releases after rejecti
 
 test('external browser requires explicit smoke number before any browser operation', async () => {
   const tabs = fakeTabs();
-  assert.throws(() => createNadoBatchRunner({ ...tabs, browser: 'edge', walletManifest: manifest, usernameForWallet: n => 'ybtl' + n, appendProgress: async () => {} }), /smokeTestWalletNumber/);
-  const runner = createNadoBatchRunner({ ...tabs, browser: 'edge', walletManifest: manifest, usernameForWallet: n => 'ybtl' + n, smokeTestWalletNumber: 4, appendProgress: async () => {} });
+  assert.throws(() => createNadoBatchRunner({ ...tabs, browser: 'edge', walletManifest: manifest, usernameForWallet: n => 'demo' + n, appendProgress: async () => {} }), /smokeTestWalletNumber/);
+  const runner = createNadoBatchRunner({ ...tabs, browser: 'edge', walletManifest: manifest, usernameForWallet: n => 'demo' + n, smokeTestWalletNumber: 4, appendProgress: async () => {} });
   await assert.rejects(() => runner.prepare(3), /冒烟/);
   assert.equal(tabs.actions.length, 0);
   assert.equal(runner.status().smokeVerified, false);
@@ -181,7 +181,7 @@ test('DOM planned runner consumes descending wallets only after explicit consent
   const tabs = fakeTabs();
   const records = [];
   const runner = createPlannedNadoRunner({
-    ...tabs, config: { bounds: { min: 1, max: 4 }, browser: 'chrome', usernamePrefix: 'ybtl' },
+    ...tabs, config: { bounds: { min: 1, max: 4 }, browser: 'chrome', usernamePrefix: 'demo' },
     walletManifest: manifest, smokeTestWalletNumber: 4, appendProgress: async record => records.push(record),
   });
   assert.equal(runner.status().nextWalletNumber, 4);
@@ -238,7 +238,7 @@ test('visible chain image must identify Ink independently of address and usernam
 
 test('manifest mismatch stops before username authorization or pairing', async () => {
   const tabs = fakeTabs({ wrongAddress: true });
-  const runner = createNadoBatchRunner({ ...tabs, walletManifest: manifest, usernameForWallet: n => 'ybtl' + n, appendProgress: async () => {} });
+  const runner = createNadoBatchRunner({ ...tabs, walletManifest: manifest, usernameForWallet: n => 'demo' + n, appendProgress: async () => {} });
   await assert.rejects(() => runner.prepare(1), /完整地址/);
   assert.equal(tabs.actions.some(action => action.startsWith('authorize')), false);
   assert.equal(tabs.captured(), '');
@@ -249,7 +249,7 @@ test('concurrent runners sharing a clipboard receive only their own pairing URI'
   t.after(() => { globalThis.getComputedStyle = previousStyle; });
   const sharedClipboard = { text: '' };
   const tabs = [fakeTabs({ sharedClipboard, tag: 'ab' }), fakeTabs({ sharedClipboard, tag: 'ef' })];
-  const runners = tabs.map(tab => createNadoBatchRunner({ ...tab, walletManifest: manifest, usernameForWallet: n => 'ybtl' + n, appendProgress: async () => {} }));
+  const runners = tabs.map(tab => createNadoBatchRunner({ ...tab, walletManifest: manifest, usernameForWallet: n => 'demo' + n, appendProgress: async () => {} }));
   await Promise.all(runners.map((runner, i) => runner.prepare(i + 1)));
   assert.equal(tabs[0].captured(), tabs[0].ownUri);
   assert.equal(tabs[1].captured(), tabs[1].ownUri);
@@ -259,7 +259,7 @@ test('concurrent runners sharing a clipboard receive only their own pairing URI'
 test('pairing locator errors are sanitized and clipboard cleanup still runs', async () => {
   const sharedClipboard = { text: '' };
   const tabs = fakeTabs({ sharedClipboard, badFill: true });
-  const runner = createNadoBatchRunner({ ...tabs, walletManifest: manifest, usernameForWallet: n => 'ybtl' + n, appendProgress: async () => {} });
+  const runner = createNadoBatchRunner({ ...tabs, walletManifest: manifest, usernameForWallet: n => 'demo' + n, appendProgress: async () => {} });
   await assert.rejects(() => runner.prepare(1), error => {
     assert.equal(String(error.stack).includes('symKey'), false);
     assert.equal(String(error.stack).includes(tabs.ownUri), false);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
@@ -9,7 +9,7 @@ import {
   ensureDedicatedProfile, appendVerifiedRecord, workerStatus, requestWorkerStop,
   termsCandidate, acceptWorkerTerms, recoverWorkerLocks, WorkerError,
 } from '../runtime.mjs';
-import { parseWorkerArgs, prepareManifestFromVisibleUi } from '../worker.mjs';
+import { parseWorkerArgs, prepareManifestFromVisibleUi, launchDedicatedBrowser } from '../worker.mjs';
 import { parseProgress } from '../cli.mjs';
 import { assertTermsMatch } from '../cua-runner.mjs';
 
@@ -65,7 +65,7 @@ test('pairing retry cannot be used when a Save intent exists', async t => {
   deps.createRunner = options => ({
     runWallet: async number => {
       events.calls.push(number);
-      await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: 'ybtl1', saveAttempted: true });
+      await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: 'demo1', saveAttempted: true });
       throw new WorkerError('PAIRING_LINK_PENDING');
     },
     cleanup: async () => {},
@@ -101,7 +101,7 @@ test('fatal UI diagnosis persists only approved enums and booleans before cleanu
 
 for (const afterSave of [false, true]) test(`safe UI attention retains context and locks until stop, afterSave=${afterSave}`, async t => {
   const { config, deps, events } = await fixture(t, 1);
-  const expectedAttempt = { walletNumber: 1, address: address(1), username: 'ybtl1', saveAttempted: true };
+  const expectedAttempt = { walletNumber: 1, address: address(1), username: 'demo1', saveAttempted: true };
   let waits = 0;
   deps.createRunner = options => ({
     runWallet: async number => {
@@ -209,7 +209,7 @@ for (const failure of ['record', 'storage']) test(`sanitized runner cannot turn 
       if (failure === 'storage') await mkdir(config.attemptPath);
       try {
         await options.onEvent({ stage: 'save_pending', walletNumber: number,
-          address: address(failure === 'record' ? number + 1 : number), username: 'ybtl1', saveAttempted: true });
+          address: address(failure === 'record' ? number + 1 : number), username: 'demo1', saveAttempted: true });
         assert.fail('event must fail before any Save');
       } catch {
         throw Object.assign(new WorkerError('NEEDS_ATTENTION'), { retainedBrowserSafe: true });
@@ -230,7 +230,7 @@ for (const failure of ['record', 'storage']) test(`sanitized runner cannot turn 
 const address = number => `0x${number.toString(16).padStart(40, '0')}`;
 const manifest = count => Array.from({ length: count }, (_, index) => ({ walletNumber: index + 1, address: address(index + 1) }));
 const verified = number => ({
-  walletNumber: number, address: address(number), username: `ybtl${number}`,
+  walletNumber: number, address: address(number), username: `demo${number}`,
   status: 'verified_login_and_ink', loginComplete: true, websiteSignedIn: true,
   websiteNetwork: 'Ink', approvedChainId: 57073, agentTransactionsSent: 0,
 });
@@ -301,12 +301,78 @@ test('auto unlock config contains only an optional local credential name', () =>
   assert.equal(Object.hasOwn(config, 'password'), false);
 });
 
+test('persisted terms approval requires an explicit lowercase SHA256 content digest', () => {
+  const repo = resolve('fixture-repo');
+  const raw = { walletsPath: 'wallets.json', progressPath: 'progress.ndjson' };
+  const options = { repoDir: repo, configPath: join(repo, 'worker.json') };
+  assert.equal(Object.hasOwn(normalizeWorkerConfig(raw, options), 'approvedTermsDigest'), false);
+  const approvedTermsDigest = termsCandidate(terms, 'reviewed-run').contentDigest;
+  assert.equal(normalizeWorkerConfig({ ...raw, approvedTermsDigest }, options).approvedTermsDigest, approvedTermsDigest);
+  for (const value of [true, false, null, 123, '', 'a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'x'.repeat(64)]) {
+    assert.throws(() => normalizeWorkerConfig({ ...raw, approvedTermsDigest: value }, options), { code: 'CONFIG_INVALID' });
+  }
+});
+
 test('CLI recognizes bootstrap, explicit consent and recovery; rejects implicit or duplicate options', () => {
   assert.equal(parseWorkerArgs(['open', '--config', 'worker.json']).command, 'open');
   assert.equal(parseWorkerArgs(['recover-locks', '--config', 'worker.json', '--confirm-closed']).confirmClosed, true);
   assert.equal(parseWorkerArgs(['run', '--config', 'worker.json', '--setup']).setup, true);
   for (const args of [['start'], ['start', '--config', 'a', '--config', 'b'], ['start', '--config', 'a', '--digest', 'x'],
     ['open', '--config', 'a', '--user-data-dir', 'daily']]) assert.throws(() => parseWorkerArgs(args));
+});
+
+test('launcher waits for owned context close before attesting partial startup cleanup', async () => {
+  let finishClose, enteredClose;
+  const closing = new Promise(done => { enteredClose = done; });
+  const closed = new Promise(done => { finishClose = done; });
+  let closeCalls = 0, settled = false;
+  const context = {
+    on() {},
+    grantPermissions: async () => { throw new Error('synthetic private browser detail'); },
+    close: async () => { closeCalls++; enteredClose(); await closed; },
+  };
+  const startup = launchDedicatedBrowser({ browser: 'edge', profileDir: 'synthetic-profile' }, {
+    chromium: { launchPersistentContext: async () => context },
+  });
+  startup.then(() => { settled = true; }, () => { settled = true; });
+  const rejected = assert.rejects(startup, error => {
+    assert.equal(error instanceof WorkerError, true);
+    assert.equal(error.message, 'BROWSER_START_FAILED');
+    assert.equal(error.browserCloseConfirmed, true);
+    assert.equal(error.cause, undefined);
+    assert.equal(JSON.stringify(error).includes('synthetic private'), false);
+    return true;
+  });
+  await closing;
+  assert.equal(settled, false);
+  finishClose();
+  await rejected;
+  assert.equal(closeCalls, 1);
+});
+
+for (const failure of ['no-context', 'close-rejected']) test(`launcher cannot attest cleanup after ${failure}`, async () => {
+  let closeCalls = 0;
+  const rawError = Object.assign(new Error('synthetic private browser detail'), { browserCloseConfirmed: true });
+  const context = {
+    on() {},
+    isClosed: () => true,
+    grantPermissions: async () => { throw rawError; },
+    close: async () => { closeCalls++; throw rawError; },
+  };
+  await assert.rejects(launchDedicatedBrowser({ browser: 'edge', profileDir: 'synthetic-profile' }, {
+    chromium: { launchPersistentContext: async () => {
+      if (failure === 'no-context') throw rawError;
+      return context;
+    } },
+  }), error => {
+    assert.equal(error instanceof WorkerError, true);
+    assert.equal(error.message, 'BROWSER_START_FAILED');
+    assert.equal(error.browserCloseConfirmed, false);
+    assert.equal(error.cause, undefined);
+    assert.equal(JSON.stringify(error).includes('synthetic private'), false);
+    return true;
+  });
+  assert.equal(closeCalls, failure === 'no-context' ? 0 : 1);
 });
 
 test('exclusive lock cannot be taken twice and only owner releases it', async t => {
@@ -319,6 +385,77 @@ test('exclusive lock cannot be taken twice and only owner releases it', async t 
   await release();
   assert.equal((await readPublicJson(path)).token, 'replacement');
 });
+
+test('atomic JSON replacement retries transient Windows sharing errors using the same complete temporary file', async t => {
+  const { root } = await fixture(t);
+  const path = join(root, 'status.json');
+  const original = '{"revision":"old"}\n';
+  const next = { revision: 'new', completed: 12 };
+  await writeFile(path, original);
+  const sources = [], delays = [];
+  const errors = ['EPERM', 'EBUSY', 'EACCES'];
+  await atomicWriteJson(path, next, {
+    platform: 'win32',
+    wait: async ms => { delays.push(ms); },
+    renameFile: async (source, destination) => {
+      sources.push(source);
+      assert.equal(destination, path);
+      assert.equal(await readFile(destination, 'utf8'), original);
+      assert.deepEqual(JSON.parse(await readFile(source, 'utf8')), next);
+      const code = errors[sources.length - 1];
+      if (code) throw Object.assign(new Error('SYNTHETIC_PRIVATE_RENAME_ERROR'), { code });
+      await rename(source, destination);
+    },
+  });
+  assert.equal(sources.length, 4);
+  assert.equal(new Set(sources).size, 1);
+  assert.deepEqual(delays, [20, 40, 80]);
+  assert.deepEqual(await readPublicJson(path), next);
+  assert.deepEqual((await readdir(root)).filter(name => name.endsWith('.tmp')), []);
+});
+
+test('permanent Windows replacement lock fails within its retry budget and preserves the original destination', async t => {
+  const { root } = await fixture(t);
+  const path = join(root, 'status.json');
+  const original = '{"revision":"untouched"}\n';
+  await writeFile(path, original);
+  const sources = [], delays = [];
+  await assert.rejects(atomicWriteJson(path, { revision: 'must-not-replace' }, {
+    platform: 'win32',
+    wait: async ms => { delays.push(ms); },
+    renameFile: async (source, destination) => {
+      sources.push(source);
+      assert.equal(await readFile(destination, 'utf8'), original);
+      assert.deepEqual(JSON.parse(await readFile(source, 'utf8')), { revision: 'must-not-replace' });
+      throw Object.assign(new Error('SYNTHETIC_PRIVATE_RENAME_ERROR'), { code: 'EPERM' });
+    },
+  }), error => error.code === 'STORAGE_ERROR' && !error.message.includes('SYNTHETIC_PRIVATE'));
+  assert.equal(sources.length, 5);
+  assert.equal(new Set(sources).size, 1);
+  assert.deepEqual(delays, [20, 40, 80, 160]);
+  assert.ok(delays.reduce((sum, delay) => sum + delay, 0) < 1000);
+  assert.equal(await readFile(path, 'utf8'), original);
+  assert.deepEqual((await readdir(root)).filter(name => name.endsWith('.tmp')), []);
+});
+
+for (const [platform, code] of [['win32', 'EIO'], ['linux', 'EPERM']]) {
+  test(`atomic replacement does not retry ${code} on ${platform}`, async t => {
+    const { root } = await fixture(t);
+    const path = join(root, 'status.json');
+    const original = '{"revision":"old"}\n';
+    await writeFile(path, original);
+    let attempts = 0, waits = 0;
+    await assert.rejects(atomicWriteJson(path, { revision: 'new' }, {
+      platform,
+      wait: async () => { waits++; },
+      renameFile: async () => { attempts++; throw Object.assign(new Error('SYNTHETIC_PRIVATE_RENAME_ERROR'), { code }); },
+    }), { code: 'STORAGE_ERROR' });
+    assert.equal(attempts, 1);
+    assert.equal(waits, 0);
+    assert.equal(await readFile(path, 'utf8'), original);
+    assert.deepEqual((await readdir(root)).filter(name => name.endsWith('.tmp')), []);
+  });
+}
 
 test('dedicated profile refuses existing unmarked data and accepts its own marker', async t => {
   const { config } = await fixture(t);
@@ -351,7 +488,7 @@ test('serial worker skips verified progress and appends durably before the next 
         events.calls.push(number);
         if (number === 1) assert.deepEqual(parseProgress(await readFile(config.progressPath, 'utf8')).map(r => r.walletNumber), [2, 3]);
         await options.onEvent({ stage: 'preparing', walletNumber: number, address: address(number) });
-        await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: `ybtl${number}`, saveAttempted: true });
+        await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: `demo${number}`, saveAttempted: true });
         assert.equal((await readPublicJson(config.attemptPath)).walletNumber, number);
         return verified(number);
       },
@@ -532,6 +669,70 @@ test('terms wait requires current-run digest confirmation and delegates live che
   assert.equal(waits, 3);
 });
 
+test('approved terms content resumes automatically across runs with fresh run-specific consent', async t => {
+  const approvedTermsDigest = termsCandidate(terms, 'reviewed-run').contentDigest;
+  const { config, deps, events } = await fixture(t, 2, { approvedTermsDigest });
+  const candidates = [], consents = [];
+  deps.createRunner = () => ({
+    runWallet: async (number, confirmation) => {
+      events.calls.push(number);
+      if (!confirmation) throw new WorkerError('TERMS_CONFIRMATION_REQUIRED');
+      assertTermsMatch(terms, confirmation);
+      const candidate = await readPublicJson(config.candidatePath);
+      const consent = await readPublicJson(config.consentPath);
+      assert.equal(consent.runId, (await workerStatus(config)).runId);
+      assert.equal(consent.runId, candidate.runId);
+      assert.equal(consent.digest, candidate.digest);
+      assert.equal(candidate.contentDigest, approvedTermsDigest);
+      candidates.push(candidate); consents.push(consent);
+      if (number === 2) await requestWorkerStop(config);
+      return verified(number);
+    },
+    readTermsCandidate: async () => terms, cleanup: async () => {},
+  });
+  deps.sleep = async () => assert.fail('approved unchanged content must not wait for manual consent');
+  const first = await runWorker(config, deps);
+  assert.equal(first.phase, 'stopped');
+  assert.equal(first.completed, 1);
+  const second = await runWorker(config, deps);
+  assert.equal(second.phase, 'completed');
+  assert.equal(second.completed, 2);
+  assert.notEqual(first.runId, second.runId);
+  assert.notEqual(candidates[0].digest, candidates[1].digest);
+  assert.notEqual(consents[0].runId, consents[1].runId);
+  assert.deepEqual(events.calls, [2, 2, 1, 1]);
+  assert.deepEqual(parseProgress(await readFile(config.progressPath, 'utf8')).map(record => record.walletNumber), [2, 1]);
+});
+
+for (const change of ['declaration', 'link']) test(`persisted approval leaves changed ${change} content waiting for confirmation`, async t => {
+  const approvedTermsDigest = termsCandidate(terms, 'reviewed-run').contentDigest;
+  const { config, deps, events } = await fixture(t, 1, { approvedTermsDigest });
+  const changed = change === 'declaration'
+    ? { ...terms, declarations: terms.declarations.map((text, index) => index ? text : `${text} changed`) }
+    : { ...terms, termsUrl: 'https://www.nado.xyz/legal-docs/terms-of-use',
+      links: ['https://www.nado.xyz/legal-docs/terms-of-use', terms.privacyUrl] };
+  deps.createRunner = () => ({
+    runWallet: async (number, confirmation) => {
+      events.calls.push(number);
+      assert.equal(confirmation, undefined);
+      throw new WorkerError('TERMS_CONFIRMATION_REQUIRED');
+    },
+    readTermsCandidate: async () => changed, cleanup: async () => {},
+  });
+  let waits = 0;
+  deps.sleep = async () => {
+    waits++;
+    assert.equal((await workerStatus(config)).phase, 'waiting_terms');
+    assert.notEqual((await readPublicJson(config.candidatePath)).contentDigest, approvedTermsDigest);
+    assert.equal(await readPublicJson(config.consentPath, { optional: true }), null);
+    await requestWorkerStop(config);
+  };
+  assert.equal((await runWorker(config, deps)).phase, 'stopped');
+  assert.equal(waits, 1);
+  assert.deepEqual(events.calls, [1]);
+  assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
+});
+
 for (const advancedStage of ['introduction', 'complete']) test(`Terms disappears before consent; the same runner resumes ${advancedStage} without another candidate read`, async t => {
   const { config, deps, events } = await fixture(t, 1);
   let visibleStage = 'terms', reads = 0, saves = 0;
@@ -545,7 +746,7 @@ for (const advancedStage of ['introduction', 'complete']) test(`Terms disappears
       if (advancedStage === 'introduction') {
         saves++;
         await options.onEvent({ stage: 'save_pending', walletNumber: number,
-          address: address(number), username: 'ybtl1', saveAttempted: true });
+          address: address(number), username: 'demo1', saveAttempted: true });
       }
       return verified(number);
     },
@@ -584,8 +785,9 @@ test('old-run terms consent is never reused and stop while waiting closes the br
   assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
 });
 
-test('runner rejects changed visible Terms after consent without a success record', async t => {
-  const { config, deps, events } = await fixture(t, 1);
+for (const persistedApproval of [false, true]) test(`runner checks live Terms after consent, persistedApproval=${persistedApproval}`, async t => {
+  const { config, deps, events } = await fixture(t, 1, persistedApproval
+    ? { approvedTermsDigest: termsCandidate(terms, 'reviewed-run').contentDigest } : {});
   let reads = 0, agreements = 0;
   deps.createRunner = () => ({
     runWallet: async (number, confirmation) => {
@@ -609,9 +811,10 @@ test('runner rejects changed visible Terms after consent without a success recor
   assert.equal(await readPublicJson(config.progressPath, { optional: true }), null);
 });
 
-test('Terms consent never removes an unresolved Save intent or bypasses the runner replay guard', async t => {
-  const { config, deps, events } = await fixture(t, 1);
-  const attempt = { walletNumber: 1, address: address(1), username: 'ybtl1', saveAttempted: true };
+for (const persistedApproval of [false, true]) test(`Terms consent preserves unresolved Save intents, persistedApproval=${persistedApproval}`, async t => {
+  const { config, deps, events } = await fixture(t, 1, persistedApproval
+    ? { approvedTermsDigest: termsCandidate(terms, 'reviewed-run').contentDigest } : {});
+  const attempt = { walletNumber: 1, address: address(1), username: 'demo1', saveAttempted: true };
   await mkdir(config.stateDir, { recursive: true });
   await atomicWriteJson(config.attemptPath, attempt);
   let reads = 0;
@@ -655,7 +858,7 @@ test('failed durable append preserves attempt and does not advance; raw error is
   deps.createRunner = options => ({
     runWallet: async number => {
       events.calls.push(number);
-      await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: `ybtl${number}`, saveAttempted: true });
+      await options.onEvent({ stage: 'save_pending', walletNumber: number, address: address(number), username: `demo${number}`, saveAttempted: true });
       return verified(number);
     }, cleanup: async () => { events.cleanups++; },
   });
@@ -671,11 +874,11 @@ test('failed durable append preserves attempt and does not advance; raw error is
 test('unfinished Save attempt is passed to the same wallet; different plan cannot bypass it', async t => {
   const { config, deps, events } = await fixture(t);
   await mkdir(config.stateDir, { recursive: true });
-  const attempt = { walletNumber: 3, address: address(3), username: 'ybtl3', saveAttempted: true };
+  const attempt = { walletNumber: 3, address: address(3), username: 'demo3', saveAttempted: true };
   await atomicWriteJson(config.attemptPath, attempt);
   await runWorker(config, deps);
   assert.deepEqual(events.options.resumeAttempt, attempt);
-  await atomicWriteJson(config.attemptPath, { ...attempt, walletNumber: 2, address: address(2), username: 'ybtl2' });
+  await atomicWriteJson(config.attemptPath, { ...attempt, walletNumber: 2, address: address(2), username: 'demo2' });
   await writeFile(config.progressPath, '');
   events.launches = 0;
   const state = await runWorker(config, deps);

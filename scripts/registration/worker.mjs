@@ -25,6 +25,7 @@ stop：完成当前钱包并保存后停止；等待解锁、条款或人工检�
 waiting_attention：保留已安全断开的专用浏览器供检查，不会自动重试；stop 或关闭窗口后结束。
 resume-connection：仅对状态明确提供 canResumeConnection=true 的本次暂停恢复连接，保留同一钱包和原调度器，不影响其他成员。
 status：只读进程和进度；accept-terms：明确确认当前运行候选文件中的六项声明。
+可选 approvedTermsDigest 固定已批准的条款内容摘要，内容匹配时自动生成本次确认；声明或链接变化仍等待确认。
 必须自行恢复保险库；默认手动解锁，可选 Windows 本机加密凭据自动解锁，不复制其他浏览器的数据。
 默认从 10000 倒序，采用配置中的公开清单和已核验进度。`;
 const ERROR_TEXT = {
@@ -62,10 +63,12 @@ export function parseWorkerArgs(args) {
   return result;
 }
 
-export async function launchDedicatedBrowser(config) {
+export async function launchDedicatedBrowser(config, { chromium } = {}) {
   // Resolve the pinned workspace dependency, without downloading tools at runtime.
-  const require = createRequire(resolve(REPO, 'apps/console/package.json'));
-  const { chromium } = require('@playwright/test');
+  if (!chromium) {
+    const require = createRequire(resolve(REPO, 'apps/console/package.json'));
+    ({ chromium } = require('@playwright/test'));
+  }
   let context;
   try {
     context = await chromium.launchPersistentContext(config.profileDir, {
@@ -94,8 +97,15 @@ export async function launchDedicatedBrowser(config) {
       close: () => context.close(),
     };
   } catch {
-    await context?.close().catch(() => {});
-    throw new WorkerError('BROWSER_START_FAILED');
+    const error = new WorkerError('BROWSER_START_FAILED');
+    error.browserCloseConfirmed = false;
+    // A rejected launch can have spawned a browser before returning a context.
+    // Only an awaited close on a context we actually own proves it is gone.
+    if (context) {
+      try { await context.close(); error.browserCloseConfirmed = true; }
+      catch {}
+    }
+    throw error;
   }
 }
 
