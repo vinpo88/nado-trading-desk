@@ -23,6 +23,7 @@ import { signerForWalletId, evmAddressForWalletId } from "./custody";
 import { getLiveConfig, productFor } from "./liveConfig";
 import type { LiveConfig, LiveProductVM } from "./liveConfig";
 import { activeNetwork } from "./chainEnv";
+import { withManualTradingLock } from "./tradeTest/exclusive";
 
 // Mutable per-operation chain config, mirrored from the SELECTED network. A live network switch
 // calls refreshNetwork() so the in-tab money path (chainId / RPC / USDT0 / caps) tracks the UI
@@ -217,6 +218,9 @@ export interface PlaceOpts { side: "buy" | "sell"; size?: string | number; price
  *  OPERATOR's price wins (tick-aligned); a taker crosses; only with no operator price
  *  do we fall back to a book-derived resting maker. */
 export async function placeOrderLive(walletId: string, marketId: string | undefined, opts: PlaceOpts): Promise<Order> {
+  return withManualTradingLock(activeNetwork().chainId, () => placeOrderUnlocked(walletId, marketId, opts));
+}
+async function placeOrderUnlocked(walletId: string, marketId: string | undefined, opts: PlaceOpts): Promise<Order> {
   if (opts.signal?.aborted) throw new Error("aborted");
   const { live, cfg } = await liveFor(walletId);
   const product = productFor(cfg, marketId);
@@ -279,6 +283,9 @@ export async function placeOrderLive(walletId: string, marketId: string | undefi
 
 /** Cancel the wallet's open orders on a market IN-TAB (all, or a specific venueId). */
 export async function cancelLive(walletId: string, marketId: string | undefined, venueId?: string, signal?: AbortSignal): Promise<{ cancelled: string[] }> {
+  return withManualTradingLock(activeNetwork().chainId, () => cancelUnlocked(walletId, marketId, venueId, signal));
+}
+async function cancelUnlocked(walletId: string, marketId: string | undefined, venueId?: string, signal?: AbortSignal): Promise<{ cancelled: string[] }> {
   if (signal?.aborted) throw new Error("aborted");
   const { live } = await liveFor(walletId);
   let venueIds: string[];
@@ -491,6 +498,9 @@ async function readAllowance(
  *  signed by the sealed in-tab wative signer, broadcast by a keyless ChainClient to the
  *  Ink RPC. The private key never leaves the tab; the server is not involved. */
 export async function depositLive(walletId: string, amount: string, signal?: AbortSignal): Promise<FundingResult> {
+  return withManualTradingLock(activeNetwork().chainId, () => depositLiveUnlocked(walletId, amount, signal));
+}
+async function depositLiveUnlocked(walletId: string, amount: string, signal?: AbortSignal): Promise<FundingResult> {
   const { cfg } = await liveFor(walletId); // asserts live is enabled + yields the endpoint
   const endpoint = cfg.endpoint;
   if (!endpoint) return { ok: false, error: "no live endpoint configured" };
@@ -563,6 +573,12 @@ function serializeOnTreasury<T>(treasuryWalletId: string, job: () => Promise<T>)
  *  the tab. A native value transfer is a strict subset of depositLive (no contract/calldata).
  *  Operator-triggered only (no auto-refuel in v1) and SERIALIZED per-treasury (one EOA = one nonce). */
 export async function refuelGasLive(
+  recipientWalletId: string,
+  opts: { amountEth?: string; treasuryWalletId?: string; signal?: AbortSignal } = {},
+): Promise<FundingResult> {
+  return withManualTradingLock(activeNetwork().chainId, () => refuelGasLiveUnlocked(recipientWalletId, opts));
+}
+async function refuelGasLiveUnlocked(
   recipientWalletId: string,
   opts: { amountEth?: string; treasuryWalletId?: string; signal?: AbortSignal } = {},
 ): Promise<FundingResult> {

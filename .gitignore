@@ -16,6 +16,10 @@ registration.worker.*.local.json
 registration.group.local.json
 nado-vault-*.json
 *vault-backup*.json
+# Exported operational reports contain wallet addresses, amounts and transaction hashes.
+nado-funds-*.json
+nado-funds-*.csv
+nado-trade-test-*.json
 *.pem
 *.key
 *.log

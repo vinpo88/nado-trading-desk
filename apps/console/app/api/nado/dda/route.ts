@@ -6,7 +6,7 @@
 import { NextResponse } from "next/server";
 import { isAddress } from "viem";
 import { IndexerClient, INDEXER_CLIENT_ENDPOINTS } from "@nadohq/indexer-client";
-import { CHAIN_ID_TO_CHAIN_ENV } from "@nadohq/client";
+import { CHAIN_ID_TO_CHAIN_ENV, subaccountToHex } from "@nadohq/client";
 import { chainIdFromCookieHeader } from "../../../lib/chainEnv"; // per-request network from the cookie
 
 export const runtime = "nodejs";
@@ -33,7 +33,7 @@ export async function GET(req: Request): Promise<NextResponse> {
   if (!owner || !isAddress(owner)) return NextResponse.json({ error: "owner must be a 0x address" }, { status: 400 });
   try {
     const { address } = await indexer.getSubaccountDDA({ subaccount: { subaccountOwner: owner, subaccountName: "default" } });
-    return NextResponse.json({ address });
+    return NextResponse.json({ ok: true, address, chainId, owner: owner.toLowerCase(), subaccount: subaccountToHex({ subaccountOwner: owner as `0x${string}`, subaccountName: "default" }).toLowerCase() }, { headers: { "cache-control": "no-store" } });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 502 });
   }

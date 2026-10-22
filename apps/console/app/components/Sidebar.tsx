@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Meter, Sidebar as KumoSidebar, Text } from "@cloudflare/kumo";
+import { Button, LinkButton, Meter, Sidebar as KumoSidebar, Text } from "@cloudflare/kumo";
 import type { AccountOption, WalletVM } from "@farm/ui";
 import type { Market } from "@farm/adapter-api";
 import { AccountFilter } from "./AccountFilter";
@@ -66,6 +66,11 @@ export function Sidebar(props: Props) {
           />
 
           {(props.liveEnabled || props.onlineAvailable) && <NetworkSwitch />}
+          <div className="flex flex-col gap-2">
+            <LinkButton href="/trade-test" variant="secondary" size="sm">自动交易测试</LinkButton>
+            <LinkButton href="/funds" variant="secondary" size="sm">资金交接与小额测试</LinkButton>
+            <Text variant="secondary" size="xs">资金库支付手续费，其他钱包转出 USDT0 时无需持有 ETH。</Text>
+          </div>
           <div className="flex flex-col gap-2 text-xs text-kumo-subtle" data-testid="connection-status">
             {props.connecting ? <p>正在检测连接…</p> : props.connectionError ? (
               <p role="alert">{zhError(props.connectionError)}</p>

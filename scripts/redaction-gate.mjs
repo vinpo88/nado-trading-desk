@@ -8,16 +8,18 @@
 //   node scripts/redaction-gate.mjs            # WARN (scan all tracked source)
 //   node scripts/redaction-gate.mjs --enforce  # exit 1 on any finding
 //   node scripts/redaction-gate.mjs --staged   # only git-staged files (pre-commit)
+//   node scripts/redaction-gate.mjs --worktree # tracked + non-ignored new source
 //   node scripts/redaction-gate.mjs --selftest  # prove every pattern fires
 // Escape hatch: a line containing `allow-pii` or `allow-hardcoded-secret` is skipped.
 // =============================================================================
 import { readFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 
 const args = new Set(process.argv.slice(2));
 const ENFORCE = args.has("--enforce");
 const STAGED = args.has("--staged");
+const WORKTREE = args.has("--worktree");
 const SELFTEST = args.has("--selftest");
 
 const username = os.userInfo().username;
@@ -26,6 +28,8 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const SKIP = /(^|\/)(node_modules|dist|\.next|\.turbo|\.git|build|coverage|recordings|pnpm-lock\.yaml)(\/|$)/;
 const TEXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|md|ya?ml|css|html|sh|ps1|cmd|bat|toml)$|(^|\/)\.env\.example$/;
+const PRIVATE_PATH = /(^|\/)(?:\.env(?:\.[^/]*)?|private-data|browser-profiles|\.local|test-results|playwright-report|wallet-manifest[^/]*\.json|nado-vault-[^/]*\.json|[^/]*vault-backup[^/]*\.json|registration\.[^/]*\.local\.json|nado-funds-[^/]*\.(?:json|csv)|nado-trade-test-[^/]*\.json)(?:\/|$)|\.(?:pem|key)$/i;
+const privatePath = (file) => PRIVATE_PATH.test(file) && !/(^|\/)\.env\.example$/.test(file);
 const ALLOW_DOMAINS = ["example.com", "example.org", "example.net", "test.com", "localhost", "anthropic.com", "noreply.github.com", "users.noreply.github.com", "inkonchain.com"];
 
 // Path/username classes are scoped to path-like contexts so common words (a CI
@@ -61,8 +65,9 @@ function scanLine(line) {
 }
 
 function listFiles() {
-  const cmd = STAGED ? "git diff --cached --name-only --diff-filter=ACM" : "git ls-files";
-  return execSync(cmd, { encoding: "utf8" }).split("\n").filter(Boolean).filter((f) => TEXT.test(f) && !SKIP.test(f));
+  const command = STAGED ? ["diff", "--cached", "--name-only", "--diff-filter=ACM", "-z"]
+    : WORKTREE ? ["ls-files", "--cached", "--others", "--exclude-standard", "-z"] : ["ls-files", "-z"];
+  return [...new Set(execFileSync("git", command, { encoding: "utf8" }).split("\0").filter(Boolean))];
 }
 
 function selftest() {
@@ -89,6 +94,8 @@ function selftest() {
   const got = new Set(synth.flatMap(scanLine));
   const missed = want.filter((w) => !got.has(w));
   if (missed.length) { console.error("✗ redaction self-test: patterns did NOT fire:", missed.join(", ")); process.exit(1); }
+  const privateExamples = ["apps/console/.env.local", "private-data/wallets.json", "browser-profiles/profile/Preferences", ".local/credentials/vault.json", "wallet-manifest.json", "nado-vault-backup.json", "registration.worker.local.json", "nado-funds-test.csv", "nado-trade-test-test.json", "signer.key"];
+  if (privateExamples.some(file => !privatePath(file)) || ["apps/console/.env.example", "apps/console/app/lib/funds/types.ts", "registration.worker.example.json"].some(privatePath)) throw new Error("private file boundary self-test failed");
   console.log(`✓ redaction self-test: all ${want.length} leak classes fire`);
 }
 
@@ -96,8 +103,11 @@ if (SELFTEST) { selftest(); process.exit(0); }
 
 const findings = [];
 for (const file of listFiles()) {
+  if (privatePath(file)) { findings.push({ file, line: 1, id: "private-file" }); continue; }
+  if (!TEXT.test(file) || SKIP.test(file)) continue;
   let text;
-  try { text = readFileSync(file, "utf8"); } catch { continue; }
+  try { text = STAGED ? execFileSync("git", ["show", `:${file}`], { encoding: "utf8" }) : readFileSync(file, "utf8"); }
+  catch { findings.push({ file, line: 1, id: "unreadable-source" }); continue; }
   text.split("\n").forEach((line, i) => {
     for (const id of scanLine(line)) findings.push({ file, line: i + 1, id });
   });

@@ -46,11 +46,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ path?: string[
   const seg = (path ?? []).join("/");
   if (!ALLOW.has(seg)) return NextResponse.json({ error: `relay path '${seg}' not allowed` }, { status: 400 });
   // Forward to the sequencer for the SELECTED network (from the cookie), resolved per request.
-  const BASE = ENGINE_CLIENT_ENDPOINTS[CHAIN_ID_TO_CHAIN_ENV[chainIdFromCookieHeader(req.headers.get("cookie"))]!];
+  const requestChainId = chainIdFromCookieHeader(req.headers.get("cookie"));
+  const expectedChain = req.headers.get("x-nado-chain-id");
+  if (expectedChain !== null && expectedChain !== String(requestChainId)) return NextResponse.json({ error: "signed request network does not match selected network" }, { status: 409 });
+  const BASE = ENGINE_CLIENT_ENDPOINTS[CHAIN_ID_TO_CHAIN_ENV[requestChainId]!];
   const body = await req.text(); // opaque: a signed execute payload or a public query
   try {
     for (let attempt = 0; ; attempt++) {
-      const r = await fetch(`${BASE}/${seg}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+      const r = await fetch(`${BASE}/${seg}`, { method: "POST", headers: { "content-type": "application/json" }, body, signal: AbortSignal.timeout(15_000) });
       if (r.status === 429 && attempt < RETRY_MAX) {
         await r.body?.cancel().catch(() => {}); // drain the rate-limit body before retrying
         await sleep(retryAfterMs(r, attempt));

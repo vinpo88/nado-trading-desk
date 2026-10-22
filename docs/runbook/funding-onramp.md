@@ -1,5 +1,10 @@
 # Funding on-ramp runbook — getting gas + USDT0 onto the cohort
 
+For the current Ink mainnet **wallet-to-wallet sponsored USDT0 transfer** framework,
+see [资金交接说明](funds-handoff.zh-CN.md). It uses EIP-3009 and does not require ETH in
+each USDT0 holder wallet. The older direct approve/deposit on-ramp described below is a
+separate flow; sponsored transfers do not perform Nado deposits or withdrawals.
+
 How each cohort wallet gets the native **gas (ETH)** and **quote collateral (USDT0)** it needs
 before it can trade. Orders themselves are gasless (off-chain EIP-712); only the funding
 lifecycle — gas top-up, USDT0 acquisition, and `depositCollateral` — touches the chain.
